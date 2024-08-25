@@ -1,0 +1,23 @@
+[package]
+name = "pgs2srt"
+version = "0.1.0"
+authors = ["Milan Bolaric"]
+edition = "2021"
+
+description = "Convert Presentation Graphic Stream (SUP files) into SRT File"
+
+keywords = ["SubTitle", "SUP", "PGS"]
+
+[dependencies]
+log = { version = "0.4.17", features = ["max_level_debug", "release_max_level_warn"] }
+log4rs = "1.3.0"
+clap = { version = "4.2.1", features = ["derive"] }
+tiff = "0.9.1"
+tesseract = "0.13.0"
+
+indicatif  = "0.17.8"
+
+pgs  = { git = "https://github.com/mbolaric/pgs.git" }
+
+[[bin]]
+name = "pgs2srt"

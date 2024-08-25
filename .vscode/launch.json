@@ -1,0 +1,25 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'pgs2srt'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=pgs2srt",
+                    "--package=pgs2srt"
+                ],
+                "filter": {
+                    "name": "pgs2srt",
+                    "kind": "bin"
+                }
+            },
+            "args": [
+                "-p ./examples/data/BluRay.sup"
+            ],
+            "cwd": "${workspaceFolder}"
+        },        
+    ]
+}
