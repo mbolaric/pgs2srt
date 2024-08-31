@@ -4,7 +4,8 @@ use std::fmt;
 pub enum Error {
     Encoding(tiff::TiffError), 
     Pgs(pgs::Error),
-    File(std::io::Error)
+    File(std::io::Error),
+    ProcessDisplaySet(String)
 }
 
 impl fmt::Display for Error {
@@ -13,7 +14,8 @@ impl fmt::Display for Error {
 		match self {
             Encoding(e) => write!(f, "Tiff Encoding Error ({e})"),
             Pgs(e) => write!(f, "Parsing Error ({e})"),
-            File(e) => write!(f, "File Read/Write Error ({e})")
+            File(e) => write!(f, "File Read/Write Error ({e})"),
+            ProcessDisplaySet(e) => write!(f, "Cannot process Display Sets ({e})"),
         }        
     }
 }

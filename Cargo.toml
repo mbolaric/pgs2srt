@@ -21,3 +21,9 @@ pgs  = { git = "https://github.com/mbolaric/pgs.git" }
 
 [[bin]]
 name = "pgs2srt"
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "fat"
+strip = "symbols"

@@ -39,7 +39,10 @@ impl<'a> PgsToSrt<'a> {
         let mut api = Tesseract::new(None, Some(language)).unwrap();
         for (i, ds) in display_sets.iter().enumerate()  {
             if ds.state() == PgsDisplaySetState::Complete {
-                let start = &display_sets[i];
+                let start = ds;
+                if display_sets.len() < i + 1 {
+                    return Err(Error::ProcessDisplaySet("Found Start without stop Display Set.".to_string()));
+                }
                 let stop = &display_sets[i + 1];
 
                 let data = get_tiff_stream(start)?;
