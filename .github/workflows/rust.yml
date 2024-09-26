@@ -18,7 +18,7 @@ jobs:
     - uses: actions/checkout@v4
     - name: Install requirements
       run: |
-        sudo apt install libtesseract5
+        sudo apt install tesseract-ocr
         sudo apt install libleptonica-dev  
         sudo apt install libtesseract-dev 
     - name: Build
