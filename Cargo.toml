@@ -17,7 +17,7 @@ tesseract = "0.15.1"
 
 indicatif  = "0.17.8"
 
-pgs  = { git = "https://github.com/mbolaric/pgs.git" }
+pgs  = { package = "pgs-parse", version = "0.1.0" }
 
 [[bin]]
 name = "pgs2srt"
