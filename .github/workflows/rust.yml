@@ -18,7 +18,5 @@ jobs:
     - name: Install tesseract
       run: sudo apt-get install libleptonica-dev libtesseract-dev clang tesseract-ocr-eng
     - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --no-default-features --verbose
     - name: Run tests
       run: cargo test --verbose
