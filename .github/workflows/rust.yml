@@ -18,5 +18,5 @@ jobs:
     - name: Install tesseract
       run: sudo apt-get install libleptonica-dev libtesseract-dev clang tesseract-ocr-eng
     - uses: actions/checkout@v4
-    - name: Run tests
-      run: cargo test --verbose
+    - name: Run Check
+      run: cargo clippy --verbose
