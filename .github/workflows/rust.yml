@@ -24,7 +24,6 @@ jobs:
         sudo apt install clang
         sudo apt install libleptonica-dev
         sudo apt install libtesseract-dev
-        curl https://sh.rustup.rs -sSf | bash -s -- -y
     - uses: actions/checkout@v4
     - name: Build
       run: cargo build --verbose
