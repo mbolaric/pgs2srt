@@ -73,7 +73,7 @@ impl<'a> PgsToSrt<'a> {
         match PgsParser::parse(pgs_file_name) {
             Ok(parser) => {
                 let output_path = self.get_out_file_name(pgs_file_name, output, language);
-                return self.process_display_set(parser.get_display_sets(), &output_path, language);
+                self.process_display_set(parser.get_display_sets(), &output_path, language)
             },
             Err(err) => Err(Error::Pgs(err))
         }
