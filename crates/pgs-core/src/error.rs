@@ -2,21 +2,21 @@ use std::fmt;
 
 #[derive(Debug)]
 pub enum Error {
-    Encoding(tiff::TiffError), 
+    Encoding(tiff::TiffError),
     Pgs(pgs::Error),
     File(std::io::Error),
-    ProcessDisplaySet(String)
+    ProcessDisplaySet(String),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use Error::*;
-		match self {
+        match self {
             Encoding(e) => write!(f, "Tiff Encoding Error ({e})"),
             Pgs(e) => write!(f, "Parsing Error ({e})"),
             File(e) => write!(f, "File Read/Write Error ({e})"),
             ProcessDisplaySet(e) => write!(f, "Cannot process Display Sets ({e})"),
-        }        
+        }
     }
 }
 

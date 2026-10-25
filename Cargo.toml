@@ -1,30 +1,30 @@
-[package]
-name = "pgs2srt"
+[workspace]
+resolver = "2"
+members = ["crates/*", "apps/*"]
+default-members = ["crates/pgs-core", "apps/pgs2srt"]
+
+[workspace.package]
 version = "0.1.3"
 authors = ["Milan Bolaric"]
 edition = "2021"
-
+license = "MIT"
 description = "Convert Presentation Graphic Stream (SUP files) into SRT File"
+keywords = ["SubTitle", "SUP", "PGS", "SRT"]
+repository = "https://github.com/mbolaric/pgs2srt"
 
-keywords = ["SubTitle", "SUP", "PGS"]
-
-[dependencies]
+[workspace.dependencies]
+pgs-core = { path = "crates/pgs-core" }
+pgs = { package = "pgs-parse", version = "0.1.3" }
+tiff = "0.11.3"
+tesseract = "0.15.2"
+tesseract-plumbing = { version = "0.11.1", default-features = false }
+clap = { version = "4.6.6", features = ["derive"] }
+indicatif = "0.18.6"
 log = { version = "0.4.33", features = [
     "max_level_debug",
     "release_max_level_warn",
 ] }
 log4rs = "1.4.0"
-clap = { version = "4.6.6", features = ["derive"] }
-tiff = "0.11.3"
-tesseract = "0.15.2"
-tesseract-plumbing = { version = "0.11.1", default-features = false }
-
-indicatif = "0.18.6"
-
-pgs = { package = "pgs-parse", version = "0.1.3" }
-
-[[bin]]
-name = "pgs2srt"
 
 [profile.release]
 opt-level = 3

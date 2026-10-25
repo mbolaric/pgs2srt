@@ -1,8 +1,11 @@
-use std::io::Cursor;
-use tiff::{encoder::{colortype, ImageEncoder, TiffEncoder}, tags};
 use pgs::PgsDisplaySet;
+use std::io::Cursor;
+use tiff::{
+    encoder::{colortype, ImageEncoder, TiffEncoder},
+    tags,
+};
 
-use crate::srt::error::Result;
+use crate::error::Result;
 
 fn num_to_bytes(dest: &mut [u8], num: u64, length: usize) {
     for (i, item) in dest.iter_mut().enumerate().take(length) {
@@ -11,9 +14,13 @@ fn num_to_bytes(dest: &mut [u8], num: u64, length: usize) {
 }
 
 fn add_tiff_tag(
-    image: &mut ImageEncoder<&mut Cursor<Vec<u8>>, colortype::RGB8, tiff::encoder::TiffKindStandard>,
+    image: &mut ImageEncoder<
+        &mut Cursor<Vec<u8>>,
+        colortype::RGB8,
+        tiff::encoder::TiffKindStandard,
+    >,
     tag: tags::Tag,
-    value: u32
+    value: u32,
 ) -> Result<()> {
     image.encoder().write_tag(tag, value)?;
     Ok(())
@@ -35,7 +42,11 @@ pub fn get_tiff_stream(ds: &PgsDisplaySet) -> Result<Cursor<Vec<u8>>> {
 
     for i in 0..height {
         for j in 0..width {
-            num_to_bytes(&mut temp[j * samples as usize..], pixels[i][j] as u64, samples as usize);
+            num_to_bytes(
+                &mut temp[j * samples as usize..],
+                pixels[i][j] as u64,
+                samples as usize,
+            );
         }
         buffer.copy_from_slice(&temp);
         for (k, byte) in buffer.iter().enumerate() {
@@ -45,8 +56,11 @@ pub fn get_tiff_stream(ds: &PgsDisplaySet) -> Result<Cursor<Vec<u8>>> {
     let mut tiff_stream = Cursor::new(Vec::new());
     let mut encoder = TiffEncoder::new(&mut tiff_stream)?;
 
-    let mut image: ImageEncoder<&mut Cursor<Vec<u8>>, colortype::RGB8, tiff::encoder::TiffKindStandard>
-        = encoder.new_image::<colortype::RGB8>(width as u32, height as u32,)?;
+    let mut image: ImageEncoder<
+        &mut Cursor<Vec<u8>>,
+        colortype::RGB8,
+        tiff::encoder::TiffKindStandard,
+    > = encoder.new_image::<colortype::RGB8>(width as u32, height as u32)?;
 
     add_tiff_tag(&mut image, tags::Tag::PlanarConfiguration, 1)?;
     add_tiff_tag(&mut image, tags::Tag::PhotometricInterpretation, 2)?;
