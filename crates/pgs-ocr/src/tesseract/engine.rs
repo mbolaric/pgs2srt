@@ -12,7 +12,7 @@ use crate::{Error, OcrEngine, OcrFuture, OcrImage, Purpose, Recognition, Result}
 
 pub(super) struct TesseractEngine {
     api: Option<TessBaseApi>,
-    modes: &'static [TessPageSegMode],
+    modes: &'static [u32],
 }
 
 impl TesseractEngine {
@@ -41,7 +41,8 @@ impl OcrEngine for TesseractEngine {
 }
 
 fn read(api: &mut TessBaseApi, rgb: &[u8], (width, height, line): (c_int, c_int, c_int), mode: u32) -> Result<Recognition> {
-    api.set_page_seg_mode(mode);
+    // A C enum: `u32` on Linux and macOS, `i32` on Windows.
+    api.set_page_seg_mode(mode as TessPageSegMode);
     api.set_image(rgb, width, height, 3, line).map_err(|error| Error::Engine(format!("Failed to set image: {error}")))?;
     api.set_source_resolution(300);
     api.recognize().map_err(|error| Error::Engine(format!("OCR recognition failed: {error}")))?;

@@ -40,7 +40,7 @@ mod tests {
     #[test]
     fn modes_match_libtesseract() {
         assert_eq!(
-            [AUTO, SINGLE_BLOCK, SINGLE_LINE, SINGLE_WORD, SPARSE_TEXT],
+            [AUTO, SINGLE_BLOCK, SINGLE_LINE, SINGLE_WORD, SPARSE_TEXT].map(|mode| mode as sys::TessPageSegMode),
             [
                 sys::TessPageSegMode_PSM_AUTO,
                 sys::TessPageSegMode_PSM_SINGLE_BLOCK,
