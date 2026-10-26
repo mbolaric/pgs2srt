@@ -9,8 +9,9 @@ use indicatif::{ProgressBar, ProgressStyle};
 use args::Args;
 use pgs_core::files::{validate_language, validate_output};
 use pgs_core::language::{detect_language_from_path, probe_language_from_file};
-use pgs_core::ocr::installed_languages;
+use pgs_core::ocr::tesseract_backend;
 use pgs_core::{output_path, validate_output_name, Error, LanguageService, PgsToSrt, ProgressReporter, Result};
+use pgs_ocr::OcrBackend;
 
 struct IndicatifReporter<'a>(&'a ProgressBar);
 
@@ -29,14 +30,14 @@ impl<'a> ProgressReporter for IndicatifReporter<'a> {
 }
 
 /// Resolves `auto` from the file name tag, falling back to an OCR probe over installed models.
-fn resolve_language(input: &Path, requested: &str) -> Result<String> {
+fn resolve_language(input: &Path, requested: &str, backend: &dyn OcrBackend) -> Result<String> {
     if !requested.eq_ignore_ascii_case("auto") {
         return Ok(requested.to_string());
     }
-    let installed = installed_languages()?;
+    let installed = backend.installed_languages()?;
     let code = match detect_language_from_path(input) {
         Some(code) => code.to_string(),
-        None => probe_language_from_file(input, &installed, &AtomicBool::new(false))
+        None => probe_language_from_file(input, &installed, backend, &AtomicBool::new(false))
             .ok_or_else(|| Error::InvalidInput(LanguageService::get("toast.detect_none").into()))?,
     };
     if !installed.contains(&code) {
@@ -49,12 +50,12 @@ fn resolve_language(input: &Path, requested: &str) -> Result<String> {
     Ok(code)
 }
 
-fn prepare(args: &Args) -> Result<(String, PathBuf)> {
+fn prepare(args: &Args, backend: &dyn OcrBackend) -> Result<(String, PathBuf)> {
     let input = Path::new(args.pgs_file_name.trim());
     if !input.is_file() {
         return Err(Error::File(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{} not found", input.display()))));
     }
-    let language = resolve_language(input, &args.language)?;
+    let language = resolve_language(input, &args.language, backend)?;
     validate_language(&language)?;
 
     let output = if args.srt_file_name.is_empty() { output_path(input, &language) } else { PathBuf::from(&args.srt_file_name) };
@@ -91,10 +92,11 @@ fn main() {
     let reporter = IndicatifReporter(&pb);
     reporter.println("[+] Start Processing");
 
-    let result = prepare(&args).and_then(|(language, output)| {
+    let backend = tesseract_backend();
+    let result = prepare(&args, &backend).and_then(|(language, output)| {
         reporter.println(&format!("[+] Language: {language}"));
         reporter.println(&format!("[+] Output: {}", output.display()));
-        PgsToSrt::new(&reporter).run(args.pgs_file_name.trim(), &language, &output.to_string_lossy())
+        PgsToSrt::new(&reporter, &backend).run(args.pgs_file_name.trim(), &language, &output.to_string_lossy())
     });
     match result {
         Ok(_) => {

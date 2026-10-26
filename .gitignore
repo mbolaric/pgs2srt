@@ -19,3 +19,6 @@ target/
 examples/data/
 .idea/
 plan/
+
+apps/pgs2srt-web/dist/
+apps/pgs2srt-web/vendor/

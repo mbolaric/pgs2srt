@@ -5,25 +5,13 @@ impl eframe::App for PgsApp {
         let ctx = ui.ctx().clone();
         self.sync_system_theme(&ctx);
         self.handle_incoming_messages();
-        self.handle_language_downloads(&ctx);
-        self.handle_batch_concurrency(&ctx);
+        self.handle_batch_concurrency();
         self.handle_queue_keyboard(&ctx);
 
         // Handle Drag & Drop of .sup files or folders containing .sup files
-        let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         if !dropped.is_empty() {
-            let mut added = 0;
-            for path in dropped {
-                if path.is_dir() {
-                    added += self.add_folder(&path, Some(&ctx));
-                } else if self.add_file(path, Some(&ctx)) {
-                    added += 1;
-                }
-            }
-            if added > 0 {
-                self.tab = WorkspaceTab::Queue;
-                self.notify(format!("{} ({added})", tr("toast.added_files")), false);
-            }
+            self.platform.take_dropped_files(dropped, self.mailbox());
         }
 
         // Render PdfCraft-grade 3-tier desktop chrome + workspace
@@ -69,9 +57,12 @@ impl eframe::App for PgsApp {
         });
 
         self.ui_toast(&ctx);
+        self.platform.set_unsaved_srts(self.items.iter().any(SubtitleItem::awaits_download));
 
         // Borderless window edge & corner resizing modeled after PdfCraft
-        WindowResizer::default().handle(&ctx);
+        if self.capabilities.window_controls {
+            WindowResizer::default().handle(&ctx);
+        }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

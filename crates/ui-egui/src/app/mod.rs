@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -11,15 +11,17 @@ use egui::{
 };
 use pgs_core::files::{is_sup, validate_language, validate_output_name};
 use pgs_core::helpers::presentation_ts_into_string;
-use pgs_core::ocr::{catalog_models, installed_languages, start_download, tessdata_directory, ModelInfo};
 use pgs_core::{I18nService, Preferences, UiLanguage};
+use pgs_ocr::ModelInfo;
 
 use crate::i18n::{format_language_label, language_matches_search, tr};
 use crate::icons;
+use crate::input::Input;
 use crate::models::{human_size, ItemStatus, ModelFilter, PreviewData, SubtitleItem, WorkspaceTab};
+use crate::platform::{Capabilities, Headless, Platform};
 use crate::theme::{self, ThemeKind, ThemePreference, Tokens};
 use crate::widgets::{self, ROW_CONTROL_HEIGHT, TOOLBAR_HEIGHT};
-use crate::worker::{spawn_conversion, spawn_language_probe, spawn_sample_loader, WorkerMessage};
+use crate::worker::{conversion_job, install_job, probe_job, sample_job, Mailbox, WorkerMessage};
 
 pub mod chrome;
 mod conversions;

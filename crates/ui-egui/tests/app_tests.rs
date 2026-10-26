@@ -1,15 +1,21 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use eframe::App as _;
 use egui::{pos2, vec2, Frame, Rect};
-use pgs_core::ocr::ModelInfo;
 use pgs_core::{I18nService, UiLanguage};
+use pgs_ocr::ModelInfo;
 use ui_egui::app::*;
 use ui_egui::i18n::{format_language_label, tr};
 use ui_egui::models::*;
 use ui_egui::theme::{self, ThemeKind, Tokens};
 use ui_egui::PgsApp;
+
+/// The UI language is process-wide: tests that set it, or lay out translated text, take turns.
+fn lock_ui_language() -> MutexGuard<'static, ()> {
+    static UI_LANGUAGE: Mutex<()> = Mutex::new(());
+    UI_LANGUAGE.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// Since egui 0.37 a panel's id is its salt combined with the parent `Ui`, here the root `Ui`.
 fn inspector_panel_id() -> egui::Id {
@@ -46,6 +52,7 @@ fn render_headless_frame(app: &mut PgsApp, ctx: &egui::Context, width: f32, heig
 
 #[test]
 fn renders_cleanly_in_light_and_dark_themes_and_both_languages_at_multiple_sizes() {
+    let _language = lock_ui_language();
     let ctx = egui::Context::default();
     theme::install_fonts(&ctx);
     let mut app = PgsApp::default();
@@ -85,7 +92,7 @@ fn renders_cleanly_in_light_and_dark_themes_and_both_languages_at_multiple_sizes
             app.items = vec![
                 SubtitleItem {
                     id: 1,
-                    input_path: PathBuf::from("/movies/Inception.2010.eng.sup"),
+                    input: PathBuf::from("/movies/Inception.2010.eng.sup").into(),
                     file_size: 28_500_000,
                     output_path: PathBuf::from("/movies/Inception.2010.eng.eng.srt"),
                     language: "eng".into(),
@@ -94,10 +101,12 @@ fn renders_cleanly_in_light_and_dark_themes_and_both_languages_at_multiple_sizes
                     probing_language: false,
                     total_cues_hint: Some(1240),
                     status: ItemStatus::Pending,
+                    srt: None,
+                    downloaded: false,
                 },
                 SubtitleItem {
                     id: 2,
-                    input_path: PathBuf::from("/movies/Dark.S01E01.deu.sup"),
+                    input: PathBuf::from("/movies/Dark.S01E01.deu.sup").into(),
                     file_size: 16_200_000,
                     output_path: PathBuf::from("/movies/Dark.S01E01.deu.deu.srt"),
                     language: "deu".into(),
@@ -112,10 +121,12 @@ fn renders_cleanly_in_light_and_dark_themes_and_both_languages_at_multiple_sizes
                         stop_ts: 90_000 * 68,
                         last_text: "Wann ist Mikkel?".into(),
                     },
+                    srt: None,
+                    downloaded: false,
                 },
                 SubtitleItem {
                     id: 3,
-                    input_path: PathBuf::from("/movies/Corrupt_Stream.sup"),
+                    input: PathBuf::from("/movies/Corrupt_Stream.sup").into(),
                     file_size: 1024,
                     output_path: PathBuf::from("/movies/Corrupt_Stream.eng.srt"),
                     language: "eng".into(),
@@ -124,6 +135,8 @@ fn renders_cleanly_in_light_and_dark_themes_and_both_languages_at_multiple_sizes
                     probing_language: false,
                     total_cues_hint: None,
                     status: ItemStatus::Failed("Invalid PGS segment header".into()),
+                    srt: None,
+                    downloaded: false,
                 },
             ];
             app.selected_id = Some(2);
@@ -147,6 +160,7 @@ fn renders_cleanly_in_light_and_dark_themes_and_both_languages_at_multiple_sizes
 
 #[test]
 fn batch_duplicate_output_paths_are_rejected_cleanly() {
+    let _language = lock_ui_language();
     let mut app = PgsApp::default();
     app.preferences.use_custom_output_dir = true;
     app.preferences.custom_output_dir = Some(PathBuf::from("/tmp/shared_out"));
@@ -164,6 +178,7 @@ fn batch_duplicate_output_paths_are_rejected_cleanly() {
 
 #[test]
 fn inspector_panel_width_remains_rock_steady_across_frames() {
+    let _language = lock_ui_language();
     let ctx = egui::Context::default();
     theme::install_fonts(&ctx);
     theme::apply(&ctx, ThemeKind::Light);
@@ -203,6 +218,7 @@ fn inspector_panel_width_remains_rock_steady_across_frames() {
 
 #[test]
 fn language_popup_stays_open_when_clicking_search_input() {
+    let _language = lock_ui_language();
     let ctx = egui::Context::default();
     theme::install_fonts(&ctx);
     theme::apply(&ctx, ThemeKind::Light);
@@ -324,6 +340,7 @@ fn language_popup_stays_open_when_clicking_search_input() {
 
 #[test]
 fn popup_arrow_keys_navigate_filtered_list_and_enter_selects() {
+    let _language = lock_ui_language();
     let ctx = egui::Context::default();
     theme::install_fonts(&ctx);
     theme::apply(&ctx, ThemeKind::Light);
@@ -420,6 +437,7 @@ fn popup_arrow_keys_navigate_filtered_list_and_enter_selects() {
 
 #[test]
 fn cinema_preview_box_never_jumps_in_height_during_conversion() {
+    let _language = lock_ui_language();
     let ctx = egui::Context::default();
     theme::install_fonts(&ctx);
     theme::apply(&ctx, ThemeKind::Light);
@@ -479,6 +497,7 @@ fn cinema_preview_box_never_jumps_in_height_during_conversion() {
 
 #[test]
 fn queue_list_supports_up_down_home_end_delete_keyboard_navigation() {
+    let _language = lock_ui_language();
     let ctx = egui::Context::default();
     theme::install_fonts(&ctx);
     theme::apply(&ctx, ThemeKind::Light);
@@ -532,6 +551,7 @@ fn queue_list_supports_up_down_home_end_delete_keyboard_navigation() {
 
 #[test]
 fn queue_rows_and_language_model_rows_never_overlap_and_keep_exact_gaps() {
+    let _language = lock_ui_language();
     let ctx = egui::Context::default();
     theme::install_fonts(&ctx);
     theme::apply(&ctx, ThemeKind::Light);
@@ -550,11 +570,11 @@ fn queue_rows_and_language_model_rows_never_overlap_and_keep_exact_gaps() {
     app.selected_id = Some(1);
     app.installed_langs = vec!["eng".into(), "hrv".into()];
     app.catalog = vec![
-        ModelInfo { code: "bos".into(), size_bytes: 2_400_000 }, // uninstalled above installed
-        ModelInfo { code: "hrv".into(), size_bytes: 3_100_000 }, // installed above uninstalled
-        ModelInfo { code: "deu".into(), size_bytes: 5_800_000 }, // uninstalled above uninstalled
-        ModelInfo { code: "srp".into(), size_bytes: 2_900_000 }, // uninstalled above installed
-        ModelInfo { code: "eng".into(), size_bytes: 4_100_000 }, // installed
+        ModelInfo { code: "bos".into(), size_bytes: 2_400_000, ..Default::default() }, // uninstalled above installed
+        ModelInfo { code: "hrv".into(), size_bytes: 3_100_000, ..Default::default() }, // installed above uninstalled
+        ModelInfo { code: "deu".into(), size_bytes: 5_800_000, ..Default::default() }, // uninstalled above uninstalled
+        ModelInfo { code: "srp".into(), size_bytes: 2_900_000, ..Default::default() }, // uninstalled above installed
+        ModelInfo { code: "eng".into(), size_bytes: 4_100_000, ..Default::default() }, // installed
     ];
 
     let queue_shapes = render_headless_frame(&mut app, &ctx, 1180.0, 820.0);
@@ -602,6 +622,7 @@ fn queue_rows_and_language_model_rows_never_overlap_and_keep_exact_gaps() {
 
 #[test]
 fn ui_language_selector_popup_fits_width_tightly_and_switches_locale() {
+    let _language = lock_ui_language();
     let ctx = egui::Context::default();
     theme::install_fonts(&ctx);
     theme::apply(&ctx, ThemeKind::Light);
@@ -734,6 +755,7 @@ fn ui_language_selector_popup_fits_width_tightly_and_switches_locale() {
 
 #[test]
 fn splitter_position_restores_from_preferences_and_persists() {
+    let _language = lock_ui_language();
     let ctx = egui::Context::default();
     theme::install_fonts(&ctx);
     theme::apply(&ctx, ThemeKind::Light);
@@ -749,6 +771,7 @@ fn splitter_position_restores_from_preferences_and_persists() {
 
 #[test]
 fn show_inspector_restores_from_preferences() {
+    let _language = lock_ui_language();
     let ctx = egui::Context::default();
     theme::install_fonts(&ctx);
     theme::apply(&ctx, ThemeKind::Light);
@@ -803,6 +826,7 @@ fn window_resizer_cursor_mapping() {
 
 #[test]
 fn window_resizer_handles_pointer_input_and_respects_maximized() {
+    let _language = lock_ui_language();
     let ctx = egui::Context::default();
     let resizer = WindowResizer::default();
 
@@ -835,6 +859,7 @@ fn window_resizer_handles_pointer_input_and_respects_maximized() {
 
 #[test]
 fn clean_component_views_render_and_emit_typed_actions_in_isolation() {
+    let _language = lock_ui_language();
     let ctx = egui::Context::default();
     theme::install_fonts(&ctx);
     theme::apply(&ctx, ThemeKind::Light);
@@ -875,14 +900,14 @@ fn clean_component_views_render_and_emit_typed_actions_in_isolation() {
     // 5. EmptyQueueView
     let mut empty_actions = Vec::new();
     let mut out_empty = ctx.run_ui(raw.clone(), |ui| {
-        EmptyQueueView::show(ui, &mut empty_actions);
+        EmptyQueueView::default().show(ui, &mut empty_actions);
     });
     out_empty.textures_delta.clear();
 
     // 6. LanguagesView
     let catalog = vec![
-        ModelInfo { code: "hrv".to_string(), size_bytes: 1024 * 1024 },
-        ModelInfo { code: "eng".to_string(), size_bytes: 4 * 1024 * 1024 },
+        ModelInfo { code: "hrv".to_string(), size_bytes: 1024 * 1024, ..Default::default() },
+        ModelInfo { code: "eng".to_string(), size_bytes: 4 * 1024 * 1024, ..Default::default() },
     ];
     let installed = vec!["eng".to_string()];
     let lang_view = LanguagesView::new(&catalog, &installed, None, ModelFilter::All, "", UiLanguage::English, None);

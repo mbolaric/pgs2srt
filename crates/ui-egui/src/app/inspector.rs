@@ -9,6 +9,7 @@ pub enum InspectorAction {
     UpdateLanguage(usize, String),
     PickDestination(usize),
     ResetDestination(usize),
+    DownloadSrt(usize),
     SetAllowOverwrite(bool),
     StartConversion(usize),
     RequestLanguageProbe(usize),
@@ -29,6 +30,7 @@ pub struct InspectorView<'a> {
     pub preview_tex: Option<(&'a egui::TextureHandle, egui::Vec2)>,
     pub popup_lang_search: &'a mut String,
     pub popup_highlight_idx: &'a mut usize,
+    pub capabilities: Capabilities,
 }
 
 impl<'a> InspectorView<'a> {
@@ -56,7 +58,13 @@ impl<'a> InspectorView<'a> {
             preview_tex,
             popup_lang_search,
             popup_highlight_idx,
+            capabilities: Capabilities::ALL,
         }
+    }
+
+    pub fn with_capabilities(mut self, capabilities: Capabilities) -> Self {
+        self.capabilities = capabilities;
+        self
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, actions: &mut Vec<InspectorAction>) {
@@ -123,7 +131,7 @@ impl<'a> InspectorView<'a> {
 
     fn ui_inspector_file_info(ui: &mut egui::Ui, item: &SubtitleItem, t: &Tokens, actions: &mut Vec<InspectorAction>) {
         widgets::section_title(ui, tr("inspector.file_section"));
-        let file_name = item.input_path.file_name().and_then(|s| s.to_str()).unwrap_or("subtitle.sup");
+        let file_name = item.input.name();
         ui.add(egui::Label::new(RichText::new(file_name).font(theme::semibold(14.0)).color(t.text)).wrap());
 
         let cues_str = item.total_cues_hint.map_or_else(|| "—".to_string(), |n| n.to_string());
@@ -150,7 +158,7 @@ impl<'a> InspectorView<'a> {
                 ui.label(RichText::new(tr("inspector.source")).font(theme::semibold(10.5)).color(t.text_faint));
                 ui.add(
                     egui::Label::new(
-                        RichText::new(item.input_path.display().to_string()).font(theme::mono(11.0)).color(t.text_muted),
+                        RichText::new(item.input.path().display().to_string()).font(theme::mono(11.0)).color(t.text_muted),
                     )
                     .wrap(),
                 );
@@ -277,7 +285,8 @@ impl<'a> InspectorView<'a> {
                     egui::Label::new(RichText::new(item.output_path.display().to_string()).font(theme::mono(11.0)).color(t.text))
                         .wrap(),
                 );
-                if !is_converting
+                if self.capabilities.overwrite
+                    && !is_converting
                     && !matches!(item.status, ItemStatus::Completed { .. })
                     && item.output_file_exists()
                     && !self.allow_overwrite
@@ -287,30 +296,42 @@ impl<'a> InspectorView<'a> {
                 }
             });
 
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled_ui(!is_converting, |ui| {
-                    widgets::icon_pill(ui, "folder", tr("action.browse"), false, ROW_CONTROL_HEIGHT)
-                })
-                .inner
-                .clicked()
-            {
-                actions.push(InspectorAction::PickDestination(item.id));
-            }
+        if self.capabilities.save_as {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled_ui(!is_converting, |ui| {
+                        widgets::icon_pill(ui, "folder", tr("action.browse"), false, ROW_CONTROL_HEIGHT)
+                    })
+                    .inner
+                    .clicked()
+                {
+                    actions.push(InspectorAction::PickDestination(item.id));
+                }
 
-            if item.custom_output_override
-                && !is_converting
-                && widgets::ghost_button(ui, "refresh", tr("action.reset_default"), ROW_CONTROL_HEIGHT).clicked()
-            {
-                actions.push(InspectorAction::ResetDestination(item.id));
-            }
-        });
+                if item.custom_output_override
+                    && !is_converting
+                    && widgets::ghost_button(ui, "refresh", tr("action.reset_default"), ROW_CONTROL_HEIGHT).clicked()
+                {
+                    actions.push(InspectorAction::ResetDestination(item.id));
+                }
+            });
+        }
 
-        ui.add_space(6.0);
-        let mut overwrite = self.allow_overwrite;
-        if ui.add(widgets::checkbox(&mut overwrite, tr("inspector.overwrite"))).changed() {
-            actions.push(InspectorAction::SetAllowOverwrite(overwrite));
+        if item.srt.is_some() {
+            ui.add_space(6.0);
+            if widgets::icon_pill(ui, "download", tr("action.download_srt"), item.awaits_download(), ROW_CONTROL_HEIGHT).clicked()
+            {
+                actions.push(InspectorAction::DownloadSrt(item.id));
+            }
+        }
+
+        if self.capabilities.overwrite {
+            ui.add_space(6.0);
+            let mut overwrite = self.allow_overwrite;
+            if ui.add(widgets::checkbox(&mut overwrite, tr("inspector.overwrite"))).changed() {
+                actions.push(InspectorAction::SetAllowOverwrite(overwrite));
+            }
         }
     }
 
@@ -479,17 +500,18 @@ impl PgsApp {
             preview_tex_ref,
             &mut self.popup_lang_search,
             &mut self.popup_highlight_idx,
-        );
+        )
+        .with_capabilities(self.capabilities);
 
         let mut actions = Vec::new();
         view.show(ui, &mut actions);
 
         for action in actions {
-            self.handle_inspector_action(action, &ctx);
+            self.handle_inspector_action(action);
         }
     }
 
-    pub fn handle_inspector_action(&mut self, action: InspectorAction, ctx: &egui::Context) {
+    pub fn handle_inspector_action(&mut self, action: InspectorAction) {
         match action {
             InspectorAction::SetSplitterWidth(w) => {
                 self.preferences.splitter_position = w;
@@ -507,41 +529,29 @@ impl PgsApp {
                     it.update_language(code, custom_dir.as_deref());
                 }
             }
-            InspectorAction::PickDestination(id) => {
-                if let Some(item) = self.items.iter_mut().find(|i| i.id == id) {
-                    let default_name = item.output_path.file_name().and_then(|s| s.to_str()).unwrap_or("subtitle.srt");
-                    let mut dialog =
-                        rfd::FileDialog::new().add_filter("SubRip Subtitle (.srt)", &["srt"]).set_file_name(default_name);
-                    if let Some(parent) = item.output_path.parent() {
-                        dialog = dialog.set_directory(parent);
-                    }
-                    if let Some(chosen) = dialog.save_file() {
-                        item.output_path = chosen;
-                        item.custom_output_override = true;
-                    }
-                }
-            }
+            InspectorAction::PickDestination(id) => self.pick_destination(id),
             InspectorAction::ResetDestination(id) => {
                 let custom_dir = self.get_effective_custom_output_dir().map(Path::to_path_buf);
                 if let Some(it) = self.items.iter_mut().find(|i| i.id == id) {
                     it.reset_output_override(custom_dir.as_deref());
                 }
             }
+            InspectorAction::DownloadSrt(id) => self.download_srts(Some(id)),
             InspectorAction::SetAllowOverwrite(overwrite) => {
                 self.preferences.allow_overwrite = overwrite;
                 self.save_preferences();
             }
             InspectorAction::StartConversion(id) => {
-                self.start_item(id, Some(ctx));
+                self.start_item(id);
             }
             InspectorAction::RequestLanguageProbe(id) => {
-                self.request_language_probe(id, Some(ctx));
+                self.request_language_probe(id);
             }
             InspectorAction::DownloadLanguage(code) => {
                 self.start_model_download(code);
             }
             InspectorAction::RequestSamplePreview(id) => {
-                self.request_sample_preview(id, Some(ctx));
+                self.request_sample_preview(id);
             }
             InspectorAction::OpenModelsTab => {
                 self.tab = WorkspaceTab::Languages;

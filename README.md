@@ -17,6 +17,14 @@ downloaded from inside the desktop app.
 License notices of the bundled software are in the Windows install folder, in `pgs2srt.app/Contents/Resources` on macOS,
 and under `usr/share/doc` in the AppImage (`share/doc` in the CLI archive).
 
+## Web Version
+
+The desktop app also runs in the browser at [mbolaric.github.io/pgs2srt](https://mbolaric.github.io/pgs2srt/), with OCR by
+[tesseract.js](https://github.com/naptha/tesseract.js). Subtitle files never leave your computer: they are read and converted in
+the browser. Finished SRTs wait in the queue until you download them, one at a time or all together with _Download All_ as one
+`.zip` file. The first visit loads about 8 MB, and each OCR language about 4 MB more. The browser caches both. Conversion is slower
+than in the desktop app, and folders, output folders and overwrite options are not available.
+
 ## Requirements (Ubuntu/Debian)
 
 ```bash

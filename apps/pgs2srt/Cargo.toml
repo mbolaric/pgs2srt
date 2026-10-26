@@ -8,7 +8,8 @@ description.workspace = true
 keywords.workspace = true
 
 [dependencies]
-pgs-core = { workspace = true }
+pgs-core = { workspace = true, features = ["native"] }
+pgs-ocr = { workspace = true }
 clap = { workspace = true }
 indicatif = { workspace = true }
 log = { workspace = true }

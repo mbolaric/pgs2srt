@@ -6,7 +6,8 @@ use tesseract_plumbing::tesseract_sys as sys;
 
 use super::engine::TesseractEngine;
 use super::ffi::{c_path, lifecycle_guard};
-use crate::{is_selectable_language, Error, OcrBackend, OcrEngine, Purpose, Result};
+use super::install::install;
+use crate::{is_selectable_language, Error, OcrBackend, OcrEngine, OcrFuture, Purpose, Result};
 
 /// Finds `<lang>.traineddata` in the download folder first, then in the bundled `tessdata` folder, and
 /// otherwise leaves the lookup to Tesseract (`TESSDATA_PREFIX` or its build-time default).
@@ -37,8 +38,11 @@ impl TesseractBackend {
 }
 
 impl OcrBackend for TesseractBackend {
-    fn engine(&self, language: &str, purpose: Purpose) -> Result<Box<dyn OcrEngine>> {
-        Ok(Box::new(TesseractEngine::new(self.data_dir(language), language, purpose)?))
+    fn engine<'a>(&'a self, language: &'a str, purpose: Purpose) -> OcrFuture<'a, Box<dyn OcrEngine + 'a>> {
+        Box::pin(async move {
+            let engine = TesseractEngine::new(self.data_dir(language), language, purpose)?;
+            Ok(Box::new(engine) as Box<dyn OcrEngine>)
+        })
     }
 
     fn installed_languages(&self) -> Result<Vec<String>> {
@@ -53,6 +57,14 @@ impl OcrBackend for TesseractBackend {
             return Err(Error::NoLanguages);
         }
         Ok(languages)
+    }
+
+    fn install<'a>(&'a self, code: &'a str) -> OcrFuture<'a, ()> {
+        Box::pin(async move { install(code, self.download_dir()?) })
+    }
+
+    fn models_location(&self) -> Option<PathBuf> {
+        self.download_dir.clone()
     }
 }
 

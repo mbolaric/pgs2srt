@@ -15,6 +15,9 @@ action.convert = Pretvori
 action.detect_image = Prepoznaj iz slike podnaslova
 action.detecting = Prepoznajem…
 action.download = Preuzmi
+action.download_all = Preuzmi sve
+action.download_all_tip = Preuzmi sve gotove SRT datoteke u jednoj .zip datoteci
+action.download_srt = Preuzmi SRT
 action.download_more = Preuzmi dodatne OCR jezike…
 action.open_models = Pregledaj 163 OCR jezika
 action.preview_cue = Učitaj uzorak sličice
@@ -33,6 +36,7 @@ badge.failed = Greška
 badge.installed = Instalirano
 badge.missing_model = Nedostaje model
 badge.pending = U redu
+badge.ready = Spremno
 
 # ── Desktop UI: Empty State & Home Cards ────────────────────────────────────
 empty.card1_body = Prepoznaje jezik podnaslova iz naziva datoteke (.eng.sup, .hrv.sup) ili vizualnom OCR analizom.
@@ -110,7 +114,6 @@ workers.tip = Najveći broj .sup datoteka koje se pretvaraju istovremeno (1–10
 # ── Core Library & Validation Messages ──────────────────────────────────────
 app.cannot_create_output_folder = Nije moguće stvoriti izlaznu mapu
 app.convert_them_separately_with_different = Pretvorite ih zasebno pod različitim nazivima.
-app.language_download_stopped_unexpectedly_try = Preuzimanje jezika neočekivano je prekinuto. Pokušajte ponovno.
 app.multiple_inputs_have_the_same = Više ulaznih datoteka ima isti naziv izlazne datoteke
 conversion_engine.decoded_subtitle_dimensions_do_not = Dekodirane dimenzije podnaslova ne odgovaraju zaglavlju slike.
 conversion_engine.display_set_contains_an_incomplete = Prikazni skup sadrži nepotpunu sliku podnaslova:

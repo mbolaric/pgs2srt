@@ -1,7 +1,9 @@
-use std::fs;
+#[cfg(feature = "native")]
 use std::path::Path;
 
-use pgs::{PgsDisplaySet, PgsDisplaySetState, PgsParser};
+#[cfg(feature = "native")]
+use pgs::PgsParser;
+use pgs::{PgsDisplaySet, PgsDisplaySetState};
 
 use crate::error::Result;
 use crate::helpers::get_rgba_image;
@@ -27,8 +29,9 @@ pub(crate) struct Cue<'a> {
     pub stop_ts: u32,
 }
 
+#[cfg(feature = "native")]
 pub(crate) fn parse_file(path: &Path) -> Result<PgsParser<'static>> {
-    Ok(PgsParser::parse_bytes(fs::read(path)?)?)
+    Ok(PgsParser::parse_bytes(std::fs::read(path)?)?)
 }
 
 /// The complete display sets of a stream, each ending where the next display set starts.
@@ -52,9 +55,14 @@ fn stop_ts_or_default(display_sets: &[PgsDisplaySet], index: usize, start_ts: u3
 }
 
 /// Extracts a representative subtitle bitmap frame and total cue count from a `.sup` file.
+#[cfg(feature = "native")]
 pub fn extract_sample_cue(path: &Path) -> Result<Option<SampleCue>> {
-    let parser = parse_file(path)?;
-    let cues = cues(parser.get_display_sets());
+    sample_cue(parse_file(path)?.get_display_sets())
+}
+
+/// A representative subtitle bitmap frame and the total cue count of a stream.
+pub fn sample_cue(display_sets: &[PgsDisplaySet]) -> Result<Option<SampleCue>> {
+    let cues = cues(display_sets);
     // Prefer the second cue when available (the first cue is occasionally a studio/title card).
     let chosen = usize::from(cues.len() > 1);
     let Some(cue) = cues.get(chosen) else {

@@ -465,39 +465,58 @@ impl PgsApp {
     }
 
     pub fn refresh_installed_languages(&mut self) {
-        match installed_languages() {
+        match self.platform.backend().installed_languages() {
             Ok(langs) if !langs.is_empty() => self.installed_langs = langs,
             Ok(_) => {}
             Err(e) => log::warn!("Cannot refresh installed OCR languages: {e}"),
         }
     }
 
-    pub fn request_language_probe(&mut self, id: usize, ctx: Option<&egui::Context>) {
-        self.start_language_probe(id, true, ctx);
+    pub fn request_language_probe(&mut self, id: usize) {
+        self.start_language_probe(id, true);
     }
 
-    pub(crate) fn start_language_probe(&mut self, id: usize, manual: bool, ctx: Option<&egui::Context>) {
-        let candidates = self.installed_langs.clone();
-        let input_path = if let Some(item) = self.items.iter_mut().find(|i| i.id == id) {
-            if item.probing_language {
-                return;
-            }
-            item.probing_language = true;
-            item.input_path.clone()
-        } else {
+    pub(crate) fn start_language_probe(&mut self, id: usize, manual: bool) {
+        let Some(item) = self.items.iter_mut().find(|i| i.id == id) else {
             return;
         };
-
-        let cancel = Arc::new(AtomicBool::new(false));
-        if let Some(prev) = self.workers.probe_cancellations.insert(id, cancel.clone()) {
-            prev.store(true, Ordering::Relaxed);
+        if item.probing_language {
+            return;
         }
-        let handle = spawn_language_probe(id, input_path, candidates, manual, cancel, self.tx.clone(), ctx.cloned());
-        self.track_worker(handle);
+        item.probing_language = true;
+
+        let run = self.workers.next_run();
+        if let Some((_, previous)) = self.workers.probe_cancellations.insert(id, (run, Arc::new(AtomicBool::new(false)))) {
+            previous.store(true, Ordering::Relaxed);
+        }
+        self.workers.queued_probes.push_back((id, run, manual));
+        self.start_next_probe();
+    }
+
+    /// Probes run one at a time, so files added together don't compete for the OCR engine.
+    pub(super) fn start_next_probe(&mut self) {
+        while self.workers.running_probe.is_none() {
+            let Some((id, run, manual)) = self.workers.queued_probes.pop_front() else {
+                return;
+            };
+            let cancel = self.workers.probe_cancellations.get(&id).filter(|(active, _)| *active == run).map(|(_, c)| c.clone());
+            let input = self.items.iter().find(|i| i.id == id).map(|i| i.input.clone());
+            let (Some(cancel), Some(input)) = (cancel, input) else {
+                continue;
+            };
+            let job = probe_job(id, run, input, self.installed_langs.clone(), manual, cancel, self.mailbox());
+            match self.platform.spawn(job) {
+                Ok(()) => self.workers.running_probe = Some(run),
+                Err(e) => {
+                    log::error!("Failed to start language detection: {e}");
+                    self.apply_probe_result(id, run, None, manual);
+                }
+            }
+        }
     }
 
     pub fn cancel_probe(&mut self, id: usize) {
-        if let Some(cancel) = self.workers.probe_cancellations.remove(&id) {
+        if let Some((_, cancel)) = self.workers.probe_cancellations.remove(&id) {
             cancel.store(true, Ordering::Relaxed);
         }
         if let Some(item) = self.items.iter_mut().find(|i| i.id == id) {
@@ -509,11 +528,8 @@ impl PgsApp {
         if self.downloading_lang.is_some() {
             return;
         }
-        match start_download(code.clone()) {
-            Ok(rx) => {
-                self.downloading_lang = Some(code);
-                self.download_rx = Some(rx);
-            }
+        match self.platform.spawn_detached(install_job(code.clone(), self.mailbox())) {
+            Ok(()) => self.downloading_lang = Some(code),
             Err(e) => {
                 log::error!("Cannot start download of OCR language {code}: {e}");
                 self.notify(format!("{} {e}", tr("toast.lang_failed")), true);
@@ -521,30 +537,17 @@ impl PgsApp {
         }
     }
 
-    pub(super) fn handle_language_downloads(&mut self, _ctx: &egui::Context) {
-        let Some(rx) = &self.download_rx else {
-            return;
-        };
-        match rx.try_recv() {
-            Ok(Ok(code)) => {
-                self.downloading_lang = None;
-                self.download_rx = None;
+    pub(super) fn on_language_installed(&mut self, code: String, result: Result<(), String>) {
+        self.downloading_lang = None;
+        match result {
+            Ok(()) => {
                 self.refresh_installed_languages();
                 let label = format_language_label(&code, self.preferences.ui_language);
                 self.notify(format!("{} {label}", tr("toast.lang_installed")), false);
             }
-            Ok(Err(e)) => {
-                log::error!("Download of OCR language {} failed: {e}", self.downloading_lang.as_deref().unwrap_or("?"));
-                self.downloading_lang = None;
-                self.download_rx = None;
+            Err(e) => {
+                log::error!("Download of OCR language {code} failed: {e}");
                 self.notify(format!("{} {e}", tr("toast.lang_failed")), true);
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                log::error!("Download thread for {} stopped without a result", self.downloading_lang.as_deref().unwrap_or("?"));
-                self.downloading_lang = None;
-                self.download_rx = None;
-                self.notify(I18nService::get("app.language_download_stopped_unexpectedly_try"), true);
             }
         }
     }

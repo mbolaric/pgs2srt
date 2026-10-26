@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 use pgs_core::language::detect_language_from_path;
 
+use crate::input::Input;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum WorkspaceTab {
     #[default]
@@ -41,7 +43,7 @@ pub struct PreviewData {
 #[derive(Clone, Debug)]
 pub struct SubtitleItem {
     pub id: usize,
-    pub input_path: PathBuf,
+    pub input: Input,
     pub file_size: u64,
     pub output_path: PathBuf,
     pub language: String,
@@ -50,18 +52,22 @@ pub struct SubtitleItem {
     pub probing_language: bool,
     pub total_cues_hint: Option<usize>,
     pub status: ItemStatus,
+    /// The finished SRT, kept on platforms that don't write files until the user downloads it.
+    pub srt: Option<Arc<[u8]>>,
+    pub downloaded: bool,
 }
 
 impl SubtitleItem {
-    pub fn new(id: usize, input_path: PathBuf, default_lang: &str, custom_output_dir: Option<&Path>) -> Self {
-        let detected = detect_language_from_path(&input_path).map(str::to_string);
+    pub fn new(id: usize, input: impl Into<Input>, default_lang: &str, custom_output_dir: Option<&Path>) -> Self {
+        let input = input.into();
+        let detected = detect_language_from_path(input.path()).map(str::to_string);
         let language = detected.clone().unwrap_or_else(|| default_lang.to_string());
-        let file_size = std::fs::metadata(&input_path).map(|m| m.len()).unwrap_or(0);
-        let output_path = compute_default_output(&input_path, &language, custom_output_dir);
+        let file_size = input.size();
+        let output_path = compute_default_output(input.path(), &language, custom_output_dir);
 
         Self {
             id,
-            input_path,
+            input,
             file_size,
             output_path,
             language,
@@ -70,16 +76,24 @@ impl SubtitleItem {
             probing_language: false,
             total_cues_hint: None,
             status: ItemStatus::Pending,
+            srt: None,
+            downloaded: false,
         }
     }
 
-    pub fn new_with_fixed_language(id: usize, input_path: PathBuf, fixed_lang: &str, custom_output_dir: Option<&Path>) -> Self {
-        let file_size = std::fs::metadata(&input_path).map(|m| m.len()).unwrap_or(0);
-        let output_path = compute_default_output(&input_path, fixed_lang, custom_output_dir);
+    pub fn new_with_fixed_language(
+        id: usize,
+        input: impl Into<Input>,
+        fixed_lang: &str,
+        custom_output_dir: Option<&Path>,
+    ) -> Self {
+        let input = input.into();
+        let file_size = input.size();
+        let output_path = compute_default_output(input.path(), fixed_lang, custom_output_dir);
 
         Self {
             id,
-            input_path,
+            input,
             file_size,
             output_path,
             language: fixed_lang.to_string(),
@@ -88,6 +102,8 @@ impl SubtitleItem {
             probing_language: false,
             total_cues_hint: None,
             status: ItemStatus::Pending,
+            srt: None,
+            downloaded: false,
         }
     }
 
@@ -102,7 +118,7 @@ impl SubtitleItem {
         if self.custom_output_override {
             return;
         }
-        self.output_path = compute_default_output(&self.input_path, &self.language, custom_output_dir);
+        self.output_path = compute_default_output(self.input.path(), &self.language, custom_output_dir);
     }
 
     pub fn reset_output_override(&mut self, custom_output_dir: Option<&Path>) {
@@ -112,6 +128,10 @@ impl SubtitleItem {
 
     pub fn output_file_exists(&self) -> bool {
         self.output_path.exists()
+    }
+
+    pub fn awaits_download(&self) -> bool {
+        self.srt.is_some() && !self.downloaded
     }
 }
 

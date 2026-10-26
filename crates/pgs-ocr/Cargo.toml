@@ -4,13 +4,16 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "OCR engine abstraction for pgs2srt with a Tesseract backend"
+description = "OCR engine abstraction for pgs2srt with Tesseract backends for desktop and web"
 
 [features]
 default = ["tesseract"]
 tesseract = ["dep:tesseract-plumbing", "dep:sha1", "dep:ureq"]
+web = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 
 [dependencies]
 tesseract-plumbing = { workspace = true, optional = true }
 sha1 = { workspace = true, optional = true }
 ureq = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
+wasm-bindgen-futures = { workspace = true, optional = true }

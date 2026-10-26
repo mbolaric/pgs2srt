@@ -21,6 +21,7 @@ pub struct TitleBarView {
     pub theme_pref: ThemePreference,
     pub ui_language: UiLanguage,
     pub auto_detect_language: bool,
+    pub capabilities: Capabilities,
 }
 
 impl TitleBarView {
@@ -33,7 +34,21 @@ impl TitleBarView {
         ui_language: UiLanguage,
         auto_detect_language: bool,
     ) -> Self {
-        Self { active_tab, queue_count, installed_models_count, show_inspector, theme_pref, ui_language, auto_detect_language }
+        Self {
+            active_tab,
+            queue_count,
+            installed_models_count,
+            show_inspector,
+            theme_pref,
+            ui_language,
+            auto_detect_language,
+            capabilities: Capabilities::ALL,
+        }
+    }
+
+    pub fn with_capabilities(mut self, capabilities: Capabilities) -> Self {
+        self.capabilities = capabilities;
+        self
     }
 
     /// Renders the 38pt top titlebar and tab strip matching PdfCraft desktop layout.
@@ -45,7 +60,7 @@ impl TitleBarView {
             .frame(Frame::NONE.fill(t.titlebar).inner_margin(Margin::symmetric(10, 0)))
             .show(ui, |ui| {
                 let bar_rect = ui.max_rect();
-                Self::ui_window_drag_and_divider(ui, bar_rect, &t);
+                Self::ui_window_drag_and_divider(ui, bar_rect, &t, self.capabilities.window_controls);
 
                 ui.horizontal_centered(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
@@ -55,9 +70,10 @@ impl TitleBarView {
                     // Right-aligned cluster: Window controls (far right) + Quick actions
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
-                        Self::ui_window_controls(ui, &t);
-
-                        widgets::vline_divider(ui, 18.0);
+                        if self.capabilities.window_controls {
+                            Self::ui_window_controls(ui, &t);
+                            widgets::vline_divider(ui, 18.0);
+                        }
 
                         self.ui_quick_actions(ui, &t, actions);
                     });
@@ -65,7 +81,18 @@ impl TitleBarView {
             });
     }
 
-    fn ui_window_drag_and_divider(ui: &mut egui::Ui, bar_rect: Rect, t: &Tokens) {
+    fn ui_window_drag_and_divider(ui: &mut egui::Ui, bar_rect: Rect, t: &Tokens, window_controls: bool) {
+        if window_controls {
+            Self::ui_window_drag(ui, bar_rect);
+        }
+        ui.painter().hline(
+            bar_rect.left() - 10.0..=bar_rect.right() + 10.0,
+            bar_rect.bottom() - 0.5,
+            Stroke::new(1.0, t.divider),
+        );
+    }
+
+    fn ui_window_drag(ui: &mut egui::Ui, bar_rect: Rect) {
         let titlebar_id = ui.scope_id().with("top_titlebar_drag_area");
         let is_max = ui.input(|i| i.viewport().maximized.unwrap_or(false));
         let drag_rect = if is_max {
@@ -86,12 +113,6 @@ impl TitleBarView {
         if drag_resp.double_clicked_by(egui::PointerButton::Primary) {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!is_max));
         }
-
-        ui.painter().hline(
-            bar_rect.left() - 10.0..=bar_rect.right() + 10.0,
-            bar_rect.bottom() - 0.5,
-            Stroke::new(1.0, t.divider),
-        );
     }
 
     fn ui_titlebar_tabs(&self, ui: &mut egui::Ui, t: &Tokens, actions: &mut Vec<TitleBarAction>) {
@@ -347,7 +368,8 @@ impl PgsApp {
             self.theme_pref,
             self.preferences.ui_language,
             self.preferences.auto_detect_language,
-        );
+        )
+        .with_capabilities(self.capabilities);
         let mut actions = Vec::new();
         view.show(ui, &mut actions);
         let ctx = ui.ctx().clone();

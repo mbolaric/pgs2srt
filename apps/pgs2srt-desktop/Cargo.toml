@@ -7,8 +7,11 @@ license.workspace = true
 description = "Desktop GUI for pgs2srt"
 
 [dependencies]
-pgs-core = { workspace = true }
+pgs-core = { workspace = true, features = ["native"] }
+pgs-ocr = { workspace = true }
 ui-egui = { workspace = true }
+rfd = { workspace = true }
+pollster = { workspace = true }
 # wgpu is the primary renderer, glow (OpenGL) is the runtime fallback.
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "glow"] }
 egui = { workspace = true }

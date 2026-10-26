@@ -9,6 +9,7 @@ pub enum QueueAction {
     Cancel(usize),
     Remove(usize),
     PickDestination(usize),
+    Download(usize),
     UpdateLanguage(usize, String),
     OpenModelsTab,
     ClearAll,
@@ -43,10 +44,23 @@ impl QueueRowRects {
 }
 
 /// Stateless presentation view for the Empty Queue workspace with drop hero and feature cards.
-pub struct EmptyQueueView;
+pub struct EmptyQueueView {
+    pub capabilities: Capabilities,
+}
+
+impl Default for EmptyQueueView {
+    fn default() -> Self {
+        Self { capabilities: Capabilities::ALL }
+    }
+}
 
 impl EmptyQueueView {
-    pub fn show(ui: &mut egui::Ui, actions: &mut Vec<QueueAction>) {
+    pub fn with_capabilities(mut self, capabilities: Capabilities) -> Self {
+        self.capabilities = capabilities;
+        self
+    }
+
+    pub fn show(&self, ui: &mut egui::Ui, actions: &mut Vec<QueueAction>) {
         let t = Tokens::get(ui.ctx());
 
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -69,7 +83,7 @@ impl EmptyQueueView {
                     ui.label(RichText::new(tr("empty.subtitle")).font(theme::regular(13.5)).color(t.text_muted));
                     ui.add_space(18.0);
 
-                    Self::ui_empty_queue_hero(ui, &t, actions);
+                    Self::ui_empty_queue_hero(ui, &t, self.capabilities.folders, actions);
                     ui.add_space(18.0);
 
                     Self::ui_empty_queue_features(ui, &t, actions);
@@ -82,7 +96,7 @@ impl EmptyQueueView {
         });
     }
 
-    fn ui_empty_queue_hero(ui: &mut egui::Ui, t: &Tokens, actions: &mut Vec<QueueAction>) {
+    fn ui_empty_queue_hero(ui: &mut egui::Ui, t: &Tokens, folders: bool, actions: &mut Vec<QueueAction>) {
         Frame::NONE
             .fill(t.card)
             .stroke(Stroke::new(1.0, t.border))
@@ -106,7 +120,7 @@ impl EmptyQueueView {
                         let lbl2 = tr("action.add_folder");
                         let w1 = ui.fonts_mut(|f| f.layout_no_wrap(lbl1.to_owned(), theme::medium(12.5), t.text).size().x) + 42.0;
                         let w2 = ui.fonts_mut(|f| f.layout_no_wrap(lbl2.to_owned(), theme::medium(12.5), t.text).size().x) + 42.0;
-                        let total_btns_w = w1 + w2 + 10.0;
+                        let total_btns_w = if folders { w1 + w2 + 10.0 } else { w1 };
                         let pad = ((ui.available_width() - total_btns_w) * 0.5).max(0.0);
                         ui.add_space(pad);
                         ui.spacing_mut().item_spacing.x = 10.0;
@@ -114,7 +128,7 @@ impl EmptyQueueView {
                         if widgets::icon_pill(ui, "plus", lbl1, true, 32.0).clicked() {
                             actions.push(QueueAction::AddFiles);
                         }
-                        if widgets::icon_pill(ui, "folder-open", lbl2, false, 32.0).clicked() {
+                        if folders && widgets::icon_pill(ui, "folder-open", lbl2, false, 32.0).clicked() {
                             actions.push(QueueAction::AddFolder);
                         }
                     });
@@ -188,6 +202,7 @@ pub struct QueueView<'a> {
     pub ui_language: UiLanguage,
     pub popup_lang_search: &'a mut String,
     pub popup_highlight_idx: &'a mut usize,
+    pub capabilities: Capabilities,
 }
 
 impl<'a> QueueView<'a> {
@@ -200,7 +215,21 @@ impl<'a> QueueView<'a> {
         popup_lang_search: &'a mut String,
         popup_highlight_idx: &'a mut usize,
     ) -> Self {
-        Self { items, selected_id, scroll_to_selected_row, installed_langs, ui_language, popup_lang_search, popup_highlight_idx }
+        Self {
+            items,
+            selected_id,
+            scroll_to_selected_row,
+            installed_langs,
+            ui_language,
+            popup_lang_search,
+            popup_highlight_idx,
+            capabilities: Capabilities::ALL,
+        }
+    }
+
+    pub fn with_capabilities(mut self, capabilities: Capabilities) -> Self {
+        self.capabilities = capabilities;
+        self
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, actions: &mut Vec<QueueAction>) {
@@ -264,7 +293,7 @@ impl<'a> QueueView<'a> {
         self.ui_queue_row_controls(ui, item, is_converting, &rects, actions);
         Self::ui_queue_row_progress_bar(ui, item, card_rect, t);
 
-        row_resp.on_hover_text(item.input_path.display().to_string());
+        row_resp.on_hover_text(item.input.path().display().to_string());
         ui.advance_cursor_after_rect(card_rect);
     }
 
@@ -303,7 +332,10 @@ impl<'a> QueueView<'a> {
                 let pct = if *total > 0 { (*cue as f32 / *total as f32 * 100.0).clamp(0.0, 100.0) } else { 0.0 };
                 (format!("{pct:.0}% · {cue}/{total}"), t.accent_text, t.accent_soft)
             }
-            ItemStatus::Completed { cues_count } => (format!("{} · {cues_count}", tr("badge.done")), t.success, t.success_soft),
+            ItemStatus::Completed { cues_count } => {
+                let badge = if item.awaits_download() { tr("badge.ready") } else { tr("badge.done") };
+                (format!("{badge} · {cues_count}"), t.success, t.success_soft)
+            }
             ItemStatus::Failed(_) => (tr("badge.failed").to_string(), t.error, t.error_soft),
         };
         let badge_rect =
@@ -325,7 +357,7 @@ impl<'a> QueueView<'a> {
 
         let text_left = rects.card.left() + 44.0;
         let max_text_w = (badge_rect.left() - 12.0 - text_left).max(0.0);
-        let file_name = item.input_path.file_name().and_then(|s| s.to_str()).unwrap_or("subtitle.sup");
+        let file_name = item.input.name();
         let is_auto = item.detected_language.as_deref() == Some(item.language.as_str());
         let title_str = if is_auto { format!("{file_name}  [{}]", tr("badge.auto")) } else { file_name.to_string() };
 
@@ -381,15 +413,29 @@ impl<'a> QueueView<'a> {
             });
 
         // 2. Output .srt Destination Button
-        let dst_tip = format!("{}\n{}", tr("action.choose_srt"), item.output_path.display());
-        let dst_resp = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(rects.dst), |ui| {
-                ui.add_enabled_ui(!is_converting, |ui| icons::button(ui, "folder", 28.0, item.custom_output_override, &dst_tip))
+        if self.capabilities.save_as {
+            let dst_tip = format!("{}\n{}", tr("action.choose_srt"), item.output_path.display());
+            let dst_resp = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(rects.dst), |ui| {
+                    ui.add_enabled_ui(!is_converting, |ui| {
+                        icons::button(ui, "folder", 28.0, item.custom_output_override, &dst_tip)
+                    })
                     .inner
-            })
-            .inner;
-        if dst_resp.clicked() {
-            actions.push(QueueAction::PickDestination(item_id));
+                })
+                .inner;
+            if dst_resp.clicked() {
+                actions.push(QueueAction::PickDestination(item_id));
+            }
+        } else if item.srt.is_some() {
+            let dl_tip = format!("{}\n{}", tr("action.download_srt"), item.output_path.display());
+            let dl_resp = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(rects.dst), |ui| {
+                    icons::button(ui, "download", 28.0, item.awaits_download(), &dl_tip)
+                })
+                .inner;
+            if dl_resp.clicked() {
+                actions.push(QueueAction::Download(item_id));
+            }
         }
 
         // 3. Action Button (Play / Stop / Retry)
@@ -492,7 +538,7 @@ impl PgsApp {
                 self.selected_id = Some(new_id);
                 self.scroll_to_selected_row = true;
                 if !self.sample_previews.contains_key(&new_id) {
-                    self.request_sample_preview(new_id, Some(ctx));
+                    self.request_sample_preview(new_id);
                 }
             }
         } else if trigger_delete {
@@ -502,17 +548,16 @@ impl PgsApp {
             }
         } else if trigger_start {
             if let Some(sel_id) = self.selected_id {
-                self.start_item(sel_id, Some(ctx));
+                self.start_item(sel_id);
             }
         }
     }
 
     pub fn ui_empty_queue(&mut self, ui: &mut egui::Ui) {
         let mut actions = Vec::new();
-        EmptyQueueView::show(ui, &mut actions);
-        let ctx = ui.ctx().clone();
+        EmptyQueueView::default().with_capabilities(self.capabilities).show(ui, &mut actions);
         for action in actions {
-            self.handle_queue_action(action, &ctx);
+            self.handle_queue_action(action);
         }
     }
 
@@ -525,26 +570,26 @@ impl PgsApp {
             self.preferences.ui_language,
             &mut self.popup_lang_search,
             &mut self.popup_highlight_idx,
-        );
+        )
+        .with_capabilities(self.capabilities);
         let mut actions = Vec::new();
         view.show(ui, &mut actions);
-        let ctx = ui.ctx().clone();
         for action in actions {
-            self.handle_queue_action(action, &ctx);
+            self.handle_queue_action(action);
         }
     }
 
-    pub fn handle_queue_action(&mut self, action: QueueAction, ctx: &egui::Context) {
+    pub fn handle_queue_action(&mut self, action: QueueAction) {
         match action {
             QueueAction::Select(id) => {
                 self.selected_id = Some(id);
                 if !self.sample_previews.contains_key(&id) {
-                    self.request_sample_preview(id, Some(ctx));
+                    self.request_sample_preview(id);
                 }
             }
             QueueAction::Start(id) => {
                 self.selected_id = Some(id);
-                self.start_item(id, Some(ctx));
+                self.start_item(id);
             }
             QueueAction::Cancel(id) => {
                 self.cancel_item(id);
@@ -554,19 +599,9 @@ impl PgsApp {
             }
             QueueAction::PickDestination(id) => {
                 self.selected_id = Some(id);
-                if let Some(item) = self.items.iter_mut().find(|i| i.id == id) {
-                    let default_name = item.output_path.file_name().and_then(|s| s.to_str()).unwrap_or("subtitle.srt");
-                    let mut dialog =
-                        rfd::FileDialog::new().add_filter("SubRip Subtitle (.srt)", &["srt"]).set_file_name(default_name);
-                    if let Some(parent) = item.output_path.parent() {
-                        dialog = dialog.set_directory(parent);
-                    }
-                    if let Some(chosen) = dialog.save_file() {
-                        item.output_path = chosen;
-                        item.custom_output_override = true;
-                    }
-                }
+                self.pick_destination(id);
             }
+            QueueAction::Download(id) => self.download_srts(Some(id)),
             QueueAction::UpdateLanguage(id, code) => {
                 self.cancel_probe(id);
                 let custom_dir = self.get_effective_custom_output_dir().map(Path::to_path_buf);
@@ -591,33 +626,8 @@ impl PgsApp {
                     self.remove_item(id);
                 }
             }
-            QueueAction::AddFiles => {
-                if let Some(files) =
-                    rfd::FileDialog::new().add_filter("Blu-ray PGS Subtitle (.sup)", &["sup", "SUP"]).pick_files()
-                {
-                    let mut count = 0;
-                    for path in files {
-                        if self.add_file(path, Some(ctx)) {
-                            count += 1;
-                        }
-                    }
-                    if count > 0 {
-                        self.tab = WorkspaceTab::Queue;
-                        self.notify(format!("{} ({count})", tr("toast.added_files")), false);
-                    }
-                }
-            }
-            QueueAction::AddFolder => {
-                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                    let added = self.add_folder(&folder, Some(ctx));
-                    if added > 0 {
-                        self.tab = WorkspaceTab::Queue;
-                        self.notify(format!("{} ({added})", tr("toast.added_files")), false);
-                    } else {
-                        self.notify(tr("toast.no_sup_in_folder"), true);
-                    }
-                }
-            }
+            QueueAction::AddFiles => self.pick_inputs(false),
+            QueueAction::AddFolder => self.pick_inputs(true),
         }
         self.scroll_to_selected_row = false;
     }

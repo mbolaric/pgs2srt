@@ -1,6 +1,6 @@
 mod backend;
 mod engine;
 mod ffi;
-pub mod models;
+mod install;
 
 pub use backend::TesseractBackend;

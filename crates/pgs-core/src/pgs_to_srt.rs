@@ -1,59 +1,28 @@
-use std::fs::File;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+#[cfg(feature = "native")]
+use std::path::Path;
 
-use pgs::{PgsDisplaySet, PgsParser};
+use pgs::PgsDisplaySet;
+#[cfg(feature = "native")]
+use pgs::PgsParser;
 use pgs_ocr::{OcrBackend, Purpose};
 
-use crate::cues::{self, cues};
+#[cfg(feature = "native")]
+use crate::cues;
+use crate::cues::cues;
 use crate::error::{Error, Result};
+#[cfg(feature = "native")]
+use crate::files;
 use crate::helpers::{get_rgba_image, ocr_image, presentation_ts_into_string};
 use crate::language::LanguageService;
 use crate::progress::ProgressReporter;
-use crate::{files, ocr};
 
 pub struct PgsToSrt<'a> {
     reporter: &'a dyn ProgressReporter,
     backend: &'a dyn OcrBackend,
 }
 
-struct TempFileGuard {
-    path: PathBuf,
-    active: bool,
-}
-
-impl Drop for TempFileGuard {
-    fn drop(&mut self) {
-        if self.active {
-            let _ = std::fs::remove_file(&self.path);
-        }
-    }
-}
-
-impl TempFileGuard {
-    fn create(output: &str) -> Result<(Self, File)> {
-        static TEMP_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let nonce = TEMP_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let out_path = Path::new(output);
-        let file_name = out_path.file_name().and_then(|s| s.to_str()).unwrap_or("subtitles.srt");
-        let parent = out_path.parent().unwrap_or_else(|| Path::new(""));
-        let temp_path = if parent.as_os_str().is_empty() {
-            PathBuf::from(format!(".{file_name}.tmp.{}.{nonce}", std::process::id()))
-        } else {
-            parent.join(format!(".{file_name}.tmp.{}.{nonce}", std::process::id()))
-        };
-        let file = File::create(&temp_path)?;
-        Ok((Self { path: temp_path, active: true }, file))
-    }
-
-    fn commit(mut self, target: &str) -> Result<()> {
-        std::fs::rename(&self.path, target)?;
-        self.active = false;
-        Ok(())
-    }
-}
-
-fn write_srt_cue(out: &mut File, cue_index: usize, timecode: &str, text: &str) -> Result<()> {
+fn write_srt_cue(out: &mut impl Write, cue_index: usize, timecode: &str, text: &str) -> Result<()> {
     writeln!(out, "{cue_index}")?;
     writeln!(out, "{timecode}")?;
     writeln!(out, "{}", text.trim_end_matches(['\r', '\n']))?;
@@ -62,11 +31,7 @@ fn write_srt_cue(out: &mut File, cue_index: usize, timecode: &str, text: &str) -
 }
 
 impl<'a> PgsToSrt<'a> {
-    pub fn new(reporter: &'a dyn ProgressReporter) -> Self {
-        Self::with_backend(reporter, ocr::backend())
-    }
-
-    pub fn with_backend(reporter: &'a dyn ProgressReporter, backend: &'a dyn OcrBackend) -> Self {
+    pub fn new(reporter: &'a dyn ProgressReporter, backend: &'a dyn OcrBackend) -> Self {
         PgsToSrt { reporter, backend }
     }
 
@@ -74,15 +39,8 @@ impl<'a> PgsToSrt<'a> {
         format!("{} --> {}", presentation_ts_into_string(start), presentation_ts_into_string(stop))
     }
 
-    /// Returns `output_path`, or `<input dir>/<input stem>.<lang>.srt` when it is empty.
-    pub fn get_out_file_name(&self, input_path: &str, output_path: &str, lang: &str) -> String {
-        if output_path.is_empty() {
-            return files::output_path(Path::new(input_path), lang).to_string_lossy().into_owned();
-        }
-        output_path.to_string()
-    }
-
-    pub fn process_display_set(&self, display_sets: &[PgsDisplaySet], output: &str, language: &str) -> Result<()> {
+    /// Recognizes every cue of `display_sets` and writes them to `out` as SRT; returns the cue count.
+    pub async fn convert(&self, display_sets: &[PgsDisplaySet], language: &str, out: &mut impl Write) -> Result<usize> {
         let cues = cues(display_sets);
         let total_cues = cues.len();
         if total_cues == 0 {
@@ -93,10 +51,9 @@ impl<'a> PgsToSrt<'a> {
             return Err(Error::Cancelled);
         }
 
-        let mut engine = self.backend.engine(language, Purpose::Subtitle)?;
+        let mut engine = self.backend.engine(language, Purpose::Subtitle).await?;
 
         self.reporter.set_total(total_cues);
-        let (guard, mut out) = TempFileGuard::create(output)?;
         let wants_frames = self.reporter.wants_preview_frames();
 
         for (index, cue) in cues.iter().enumerate() {
@@ -104,11 +61,11 @@ impl<'a> PgsToSrt<'a> {
                 return Err(Error::Cancelled);
             }
 
-            let text = engine.recognize(&ocr_image(cue.display_set)?)?.text.replace('|', "I");
+            let text = engine.recognize(&ocr_image(cue.display_set)?).await?.text.replace('|', "I");
 
             let count = index + 1;
             let timecode = self.get_formatted_presentation_time(cue.start_ts, cue.stop_ts);
-            write_srt_cue(&mut out, count, &timecode, &text)?;
+            write_srt_cue(out, count, &timecode, &text)?;
 
             if wants_frames {
                 let frame = get_rgba_image(cue.display_set).ok();
@@ -118,11 +75,23 @@ impl<'a> PgsToSrt<'a> {
             }
             self.reporter.set_position(count);
         }
-        out.sync_all()?;
-        drop(out);
+        Ok(total_cues)
+    }
+}
 
-        guard.commit(output)?;
-        Ok(())
+#[cfg(feature = "native")]
+impl PgsToSrt<'_> {
+    /// Returns `output_path`, or `<input dir>/<input stem>.<lang>.srt` when it is empty.
+    pub fn get_out_file_name(&self, input_path: &str, output_path: &str, lang: &str) -> String {
+        if output_path.is_empty() {
+            return files::output_path(Path::new(input_path), lang).to_string_lossy().into_owned();
+        }
+        output_path.to_string()
+    }
+
+    pub fn process_display_set(&self, display_sets: &[PgsDisplaySet], output: &str, language: &str) -> Result<()> {
+        files::write_atomically(Path::new(output), |file| pollster::block_on(self.convert(display_sets, language, file)))
+            .map(drop)
     }
 
     pub fn run(&self, pgs_file_name: &str, language: &str, output: &str) -> Result<()> {
@@ -134,5 +103,56 @@ impl<'a> PgsToSrt<'a> {
     pub fn run_from_bytes(&self, bytes: impl AsRef<[u8]>, language: &str, output: &str) -> Result<()> {
         let parser = PgsParser::parse_bytes(bytes)?;
         self.process_display_set(parser.get_display_sets(), output, language)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use pgs_ocr::{OcrEngine, OcrFuture, OcrImage, Recognition};
+
+    use super::*;
+    use crate::progress::NoOpProgressReporter;
+    use crate::test_support::subtitle_display_set;
+
+    struct FixedText;
+
+    impl OcrEngine for FixedText {
+        fn recognize<'a>(&'a mut self, _image: &'a OcrImage) -> OcrFuture<'a, Recognition> {
+            Box::pin(async { Ok(Recognition { text: "He|lo\n".into(), confidence: 90.0 }) })
+        }
+    }
+
+    impl OcrBackend for FixedText {
+        fn engine<'a>(&'a self, _language: &'a str, _purpose: Purpose) -> OcrFuture<'a, Box<dyn OcrEngine + 'a>> {
+            Box::pin(async { Ok(Box::new(FixedText) as Box<dyn OcrEngine>) })
+        }
+
+        fn installed_languages(&self) -> pgs_ocr::Result<Vec<String>> {
+            Ok(vec!["eng".into()])
+        }
+
+        fn install<'a>(&'a self, _code: &'a str) -> OcrFuture<'a, ()> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn models_location(&self) -> Option<PathBuf> {
+            None
+        }
+    }
+
+    #[test]
+    fn convert_writes_recognized_cues_as_srt() -> Result<()> {
+        let converter = PgsToSrt::new(&NoOpProgressReporter, &FixedText);
+        let display_sets = [subtitle_display_set(90_000), subtitle_display_set(270_000)];
+        let mut srt = Vec::new();
+        assert_eq!(pollster::block_on(converter.convert(&display_sets, "eng", &mut srt))?, 2);
+        assert_eq!(
+            String::from_utf8_lossy(&srt),
+            "1\n00:00:01,000 --> 00:00:03,000\nHeIlo\n\n2\n00:00:03,000 --> 00:00:05,000\nHeIlo\n\n"
+        );
+        assert!(matches!(pollster::block_on(converter.convert(&[], "eng", &mut srt)), Err(Error::ProcessDisplaySet(_))));
+        Ok(())
     }
 }

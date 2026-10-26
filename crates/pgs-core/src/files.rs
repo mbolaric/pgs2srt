@@ -1,5 +1,10 @@
+#[cfg(feature = "native")]
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
+#[cfg(feature = "native")]
+use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(feature = "native")]
 use crate::dirs;
 use crate::error::{Error, Result};
 use crate::language::LanguageService;
@@ -23,6 +28,7 @@ pub fn output_path(input: &Path, language: &str) -> PathBuf {
     input.with_extension(format!("{}.srt", language.replace('/', "_")))
 }
 
+#[cfg(feature = "native")]
 pub fn resolve_path(value: &str, base: &Path) -> Result<PathBuf> {
     if value.is_empty() {
         return Err(Error::InvalidInput(LanguageService::get("files.enter_an_output_path").into()));
@@ -44,6 +50,7 @@ pub fn validate_output_name(output: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "native")]
 pub fn validate_output(output: &Path) -> Result<PathBuf> {
     validate_output_name(output)?;
     let parent = output.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or(Path::new("."));
@@ -63,6 +70,26 @@ pub fn validate_output(output: &Path) -> Result<PathBuf> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(output),
         Err(error) => Err(error.into()),
     }
+}
+
+/// Writes `output` through a temporary sibling renamed into place, so it never holds a partial file.
+#[cfg(feature = "native")]
+pub fn write_atomically<T>(output: &Path, write: impl FnOnce(&mut File) -> Result<T>) -> Result<T> {
+    static NONCE: AtomicU64 = AtomicU64::new(0);
+    let nonce = NONCE.fetch_add(1, Ordering::Relaxed);
+    let name = output.file_name().and_then(|name| name.to_str()).unwrap_or("subtitles.srt");
+    let temporary = output.with_file_name(format!(".{name}.tmp.{}.{nonce}", std::process::id()));
+    let result = File::create(&temporary).map_err(Error::from).and_then(|mut file| {
+        let value = write(&mut file)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary, output)?;
+        Ok(value)
+    });
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
 }
 
 #[cfg(test)]

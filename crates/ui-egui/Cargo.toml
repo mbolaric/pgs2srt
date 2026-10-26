@@ -7,10 +7,11 @@ license.workspace = true
 description = "Shared egui interface for pgs2srt desktop and web"
 
 [dependencies]
+pgs = { workspace = true }
 pgs-core = { workspace = true }
+pgs-ocr = { workspace = true }
 egui = { workspace = true }
 eframe = { workspace = true, features = ["glow", "default_fonts"] }
-rfd = { workspace = true }
 crossbeam-channel = { workspace = true }
 log = { workspace = true }
 

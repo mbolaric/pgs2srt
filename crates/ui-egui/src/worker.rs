@@ -1,13 +1,13 @@
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
-
-static PROBE_LOCK: Mutex<()> = Mutex::new(());
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crossbeam_channel::Sender;
-use pgs_core::language::probe_language_from_file;
-use pgs_core::{extract_sample_cue, Error, PgsToSrt, ProgressReporter, SampleCue};
+use pgs::PgsParser;
+use pgs_core::language::probe_language;
+use pgs_core::{sample_cue, Error, PgsToSrt, ProgressReporter, SampleCue};
+
+use crate::input::Input;
+use crate::platform::Job;
 
 #[derive(Clone, Debug)]
 pub enum WorkerMessage {
@@ -30,6 +30,7 @@ pub enum WorkerMessage {
         id: usize,
         run: u64,
         cues_count: usize,
+        srt: Vec<u8>,
     },
     Failed {
         id: usize,
@@ -42,37 +43,53 @@ pub enum WorkerMessage {
     },
     LanguageProbed {
         id: usize,
+        run: u64,
         detected: Option<String>,
         manual: bool,
     },
+    LanguageInstalled {
+        code: String,
+        result: Result<(), String>,
+    },
+    InputsPicked {
+        inputs: Vec<Input>,
+        folder: bool,
+    },
 }
 
-struct GuiReporter {
-    id: usize,
-    run: u64,
+/// Sends worker results to the UI and wakes it to handle them.
+#[derive(Clone)]
+pub struct Mailbox {
     sender: Sender<WorkerMessage>,
-    cancelled: Arc<AtomicBool>,
-    last_cue: Arc<AtomicUsize>,
     ctx: Option<egui::Context>,
 }
 
-impl GuiReporter {
-    fn wake(&self) {
+impl Mailbox {
+    pub fn new(sender: Sender<WorkerMessage>, ctx: Option<egui::Context>) -> Self {
+        Self { sender, ctx }
+    }
+
+    pub fn send(&self, message: WorkerMessage) {
+        let _ = self.sender.send(message);
         if let Some(ctx) = &self.ctx {
             ctx.request_repaint();
         }
     }
 }
 
+struct GuiReporter {
+    id: usize,
+    run: u64,
+    mailbox: Mailbox,
+    cancelled: Arc<AtomicBool>,
+}
+
 impl ProgressReporter for GuiReporter {
     fn set_total(&self, total: usize) {
-        let _ = self.sender.send(WorkerMessage::Started { id: self.id, run: self.run, total });
-        self.wake();
+        self.mailbox.send(WorkerMessage::Started { id: self.id, run: self.run, total });
     }
 
-    fn set_position(&self, position: usize) {
-        self.last_cue.store(position, Ordering::Relaxed);
-    }
+    fn set_position(&self, _position: usize) {}
 
     fn println(&self, _message: &str) {}
 
@@ -89,9 +106,8 @@ impl ProgressReporter for GuiReporter {
         text: &str,
         rgba: Option<(usize, usize, Vec<u8>)>,
     ) {
-        self.last_cue.store(cue, Ordering::Relaxed);
         let rgba = rgba.map(|(w, h, bytes)| (w, h, Arc::<[u8]>::from(bytes)));
-        let _ = self.sender.send(WorkerMessage::CueProgress {
+        self.mailbox.send(WorkerMessage::CueProgress {
             id: self.id,
             run: self.run,
             cue,
@@ -101,7 +117,6 @@ impl ProgressReporter for GuiReporter {
             text: text.to_string(),
             rgba,
         });
-        self.wake();
     }
 
     fn is_cancelled(&self) -> bool {
@@ -109,127 +124,75 @@ impl ProgressReporter for GuiReporter {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn spawn_conversion(
+fn parse(input: &Input) -> pgs_core::Result<PgsParser<'static>> {
+    Ok(PgsParser::parse_bytes(input.bytes()?)?)
+}
+
+pub fn conversion_job(id: usize, run: u64, input: Input, language: String, cancelled: Arc<AtomicBool>, mailbox: Mailbox) -> Job {
+    Box::new(move |backend| {
+        Box::pin(async move {
+            let reporter = GuiReporter { id, run, mailbox: mailbox.clone(), cancelled };
+            let mut srt = Vec::new();
+            let converted = match parse(&input) {
+                Ok(parser) => PgsToSrt::new(&reporter, backend).convert(parser.get_display_sets(), &language, &mut srt).await,
+                Err(e) => Err(e),
+            };
+            let message = match converted {
+                Ok(cues_count) => WorkerMessage::Completed { id, run, cues_count, srt },
+                Err(e) => {
+                    if matches!(e, Error::Cancelled) {
+                        log::info!("Conversion of {} cancelled", input.path().display());
+                    } else {
+                        log::error!("Conversion of {} ({language}) failed: {e}", input.path().display());
+                    }
+                    WorkerMessage::Failed { id, run, error: e.to_string() }
+                }
+            };
+            mailbox.send(message);
+        })
+    })
+}
+
+pub fn sample_job(id: usize, input: Input, mailbox: Mailbox) -> Job {
+    Box::new(move |_| {
+        Box::pin(async move {
+            let sample = parse(&input).and_then(|parser| sample_cue(parser.get_display_sets())).unwrap_or_else(|e| {
+                log::warn!("Cannot load preview sample from {}: {e}", input.path().display());
+                None
+            });
+            mailbox.send(WorkerMessage::SampleLoaded { id, sample });
+        })
+    })
+}
+
+pub fn probe_job(
     id: usize,
     run: u64,
-    input_path: String,
-    language: String,
-    output_path: String,
-    sender: Sender<WorkerMessage>,
-    cancelled: Arc<AtomicBool>,
-    ctx: Option<egui::Context>,
-) -> Option<JoinHandle<()>> {
-    let thread_sender = sender.clone();
-    let thread_ctx = ctx.clone();
-    match std::thread::Builder::new().name(format!("pgs2srt-convert-{id}")).spawn(move || {
-        let last_cue = Arc::new(AtomicUsize::new(0));
-        let reporter = GuiReporter {
-            id,
-            run,
-            sender: thread_sender.clone(),
-            cancelled,
-            last_cue: last_cue.clone(),
-            ctx: thread_ctx.clone(),
-        };
-
-        let converter = PgsToSrt::new(&reporter);
-        match converter.run(&input_path, &language, &output_path) {
-            Ok(()) => {
-                let count = last_cue.load(Ordering::Relaxed);
-                let _ = thread_sender.send(WorkerMessage::Completed { id, run, cues_count: count });
-            }
-            Err(e) => {
-                if matches!(e, Error::Cancelled) {
-                    log::info!("Conversion of {input_path} cancelled");
-                } else {
-                    log::error!("Conversion of {input_path} ({language}) failed: {e}");
-                }
-                let _ = thread_sender.send(WorkerMessage::Failed { id, run, error: e.to_string() });
-            }
-        }
-        if let Some(ctx) = thread_ctx {
-            ctx.request_repaint();
-        }
-    }) {
-        Ok(handle) => Some(handle),
-        Err(e) => {
-            log::error!("Failed to spawn conversion thread: {e}");
-            let _ = sender.send(WorkerMessage::Failed { id, run, error: format!("Failed to spawn worker thread: {e}") });
-            if let Some(ctx) = ctx {
-                ctx.request_repaint();
-            }
-            None
-        }
-    }
-}
-
-pub fn spawn_sample_loader(
-    id: usize,
-    input_path: PathBuf,
-    sender: Sender<WorkerMessage>,
-    ctx: Option<egui::Context>,
-) -> Option<JoinHandle<()>> {
-    let thread_sender = sender.clone();
-    let thread_ctx = ctx.clone();
-    match std::thread::Builder::new().name(format!("pgs2srt-sample-{id}")).spawn(move || {
-        let sample = extract_sample_cue(&input_path).unwrap_or_else(|e| {
-            log::warn!("Cannot load preview sample from {}: {e}", input_path.display());
-            None
-        });
-        let _ = thread_sender.send(WorkerMessage::SampleLoaded { id, sample });
-        if let Some(ctx) = thread_ctx {
-            ctx.request_repaint();
-        }
-    }) {
-        Ok(handle) => Some(handle),
-        Err(e) => {
-            log::error!("Failed to spawn sample loader thread: {e}");
-            let _ = sender.send(WorkerMessage::SampleLoaded { id, sample: None });
-            if let Some(ctx) = ctx {
-                ctx.request_repaint();
-            }
-            None
-        }
-    }
-}
-
-pub fn spawn_language_probe(
-    id: usize,
-    input_path: PathBuf,
+    input: Input,
     candidates: Vec<String>,
     manual: bool,
     cancelled: Arc<AtomicBool>,
-    sender: Sender<WorkerMessage>,
-    ctx: Option<egui::Context>,
-) -> Option<JoinHandle<()>> {
-    let thread_sender = sender.clone();
-    let thread_ctx = ctx.clone();
-    match std::thread::Builder::new().name(format!("pgs2srt-probe-{id}")).spawn(move || {
-        if cancelled.load(Ordering::Relaxed) {
-            return;
-        }
-        let _guard = PROBE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        if cancelled.load(Ordering::Relaxed) {
-            return;
-        }
-        let detected = probe_language_from_file(&input_path, &candidates, &cancelled);
-        if cancelled.load(Ordering::Relaxed) {
-            return;
-        }
-        let _ = thread_sender.send(WorkerMessage::LanguageProbed { id, detected, manual });
-        if let Some(ctx) = thread_ctx {
-            ctx.request_repaint();
-        }
-    }) {
-        Ok(handle) => Some(handle),
-        Err(e) => {
-            log::error!("Failed to spawn language probe thread: {e}");
-            let _ = sender.send(WorkerMessage::LanguageProbed { id, detected: None, manual });
-            if let Some(ctx) = ctx {
-                ctx.request_repaint();
-            }
-            None
-        }
-    }
+    mailbox: Mailbox,
+) -> Job {
+    Box::new(move |backend| {
+        Box::pin(async move {
+            let detected = match parse(&input) {
+                Ok(parser) => probe_language(parser.get_display_sets(), &candidates, backend, &cancelled).await,
+                Err(e) => {
+                    log::warn!("Cannot detect the language of {}: {e}", input.path().display());
+                    None
+                }
+            };
+            mailbox.send(WorkerMessage::LanguageProbed { id, run, detected, manual });
+        })
+    })
+}
+
+pub fn install_job(code: String, mailbox: Mailbox) -> Job {
+    Box::new(move |backend| {
+        Box::pin(async move {
+            let result = backend.install(&code).await.map_err(|e| Error::from(e).to_string());
+            mailbox.send(WorkerMessage::LanguageInstalled { code, result });
+        })
+    })
 }

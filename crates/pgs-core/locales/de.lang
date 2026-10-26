@@ -15,6 +15,9 @@ action.convert = Konvertieren
 action.detect_image = Aus Untertitelbild erkennen
 action.detecting = Erkenne…
 action.download = Laden
+action.download_all = Alle herunterladen
+action.download_all_tip = Alle fertigen SRT-Dateien in einer .zip-Datei herunterladen
+action.download_srt = SRT herunterladen
 action.download_more = Weitere OCR-Sprachen herunterladen…
 action.open_models = 163 OCR-Sprachen durchsuchen
 action.preview_cue = Beispielbild laden
@@ -33,6 +36,7 @@ badge.failed = Fehler
 badge.installed = Installiert
 badge.missing_model = Modell fehlt
 badge.pending = Wartend
+badge.ready = Bereit
 
 # ── Desktop UI: Empty State & Home Cards ────────────────────────────────────
 empty.card1_body = Erkennt die Untertitelsprache aus Dateinamen (.eng.sup, .deu.sup) oder per visueller OCR-Analyse.
@@ -110,7 +114,6 @@ workers.tip = Maximale Anzahl gleichzeitig konvertierter .sup-Dateien (1–10)
 # ── Core Library & Validation Messages ──────────────────────────────────────
 app.cannot_create_output_folder = Ausgabeordner kann nicht erstellt werden
 app.convert_them_separately_with_different = Konvertiere sie einzeln mit unterschiedlichen Namen.
-app.language_download_stopped_unexpectedly_try = Der Sprachdownload wurde unerwartet beendet. Versuche es erneut.
 app.multiple_inputs_have_the_same = Mehrere Eingaben haben denselben Ausgabedateinamen
 conversion_engine.decoded_subtitle_dimensions_do_not = Die dekodierten Untertitelmaße stimmen nicht mit dem Bildkopf überein.
 conversion_engine.display_set_contains_an_incomplete = Anzeigesatz enthält ein unvollständiges Untertitelbild:

@@ -1,7 +1,10 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod platform;
+
 use eframe::{NativeOptions, Renderer};
 use egui::Vec2;
+use platform::DesktopPlatform;
 use ui_egui::PgsApp;
 
 fn preferred_renderer() -> Renderer {
@@ -65,7 +68,7 @@ fn run(renderer: Renderer) -> eframe::Result<()> {
         options,
         Box::new(move |cc| {
             log::info!("Using the {renderer} renderer");
-            Ok(Box::new(PgsApp::new(cc)))
+            Ok(Box::new(PgsApp::new(cc, Box::new(DesktopPlatform::new()))))
         }),
     )
 }

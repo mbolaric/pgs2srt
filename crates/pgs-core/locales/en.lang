@@ -21,6 +21,9 @@ action.convert = Convert
 action.detect_image = Detect from subtitle image
 action.detecting = Detecting…
 action.download = Download
+action.download_all = Download All
+action.download_all_tip = Download every finished SRT in one .zip file
+action.download_srt = Download SRT
 action.download_more = Download more OCR languages…
 action.open_models = Browse 163 OCR Languages
 action.preview_cue = Load sample frame
@@ -39,6 +42,7 @@ badge.failed = Failed
 badge.installed = Installed
 badge.missing_model = Model missing
 badge.pending = Queued
+badge.ready = Ready
 
 # ── Desktop UI: Empty State & Home Cards ────────────────────────────────────
 empty.card1_body = Detects track language from filename tags (e.g. .eng.sup, .deu.sup) or visual OCR probing.
@@ -116,7 +120,6 @@ workers.tip = Maximum number of .sup files converted in parallel (1–10)
 # ── Core Library & Validation Messages ──────────────────────────────────────
 app.cannot_create_output_folder = Cannot create output folder
 app.convert_them_separately_with_different = Convert them separately with different names.
-app.language_download_stopped_unexpectedly_try = Language download stopped unexpectedly. Try again.
 app.multiple_inputs_have_the_same = Multiple inputs have the same output filename
 conversion_engine.decoded_subtitle_dimensions_do_not = Decoded subtitle dimensions do not match the image header.
 conversion_engine.display_set_contains_an_incomplete = Display set contains an incomplete subtitle image:

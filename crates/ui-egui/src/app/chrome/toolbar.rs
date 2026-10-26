@@ -9,6 +9,7 @@ pub enum ToolbarAction {
     AddFolder,
     ToggleCustomOutputDir(bool),
     PickCustomFolder,
+    DownloadAll,
     StartBatch,
     CancelBatch,
     SetParallelWorkers(usize),
@@ -22,6 +23,8 @@ pub struct ToolbarView<'a> {
     pub use_custom_output_dir: bool,
     pub custom_output_dir: Option<&'a Path>,
     pub parallel_files: usize,
+    pub downloadable_count: usize,
+    pub capabilities: Capabilities,
 }
 
 impl<'a> ToolbarView<'a> {
@@ -32,7 +35,25 @@ impl<'a> ToolbarView<'a> {
         custom_output_dir: Option<&'a Path>,
         parallel_files: usize,
     ) -> Self {
-        Self { is_batch_running, runnable_count, use_custom_output_dir, custom_output_dir, parallel_files }
+        Self {
+            is_batch_running,
+            runnable_count,
+            use_custom_output_dir,
+            custom_output_dir,
+            parallel_files,
+            downloadable_count: 0,
+            capabilities: Capabilities::ALL,
+        }
+    }
+
+    pub fn with_capabilities(mut self, capabilities: Capabilities) -> Self {
+        self.capabilities = capabilities;
+        self
+    }
+
+    pub fn with_downloadable_count(mut self, downloadable_count: usize) -> Self {
+        self.downloadable_count = downloadable_count;
+        self
     }
 
     pub fn show(&self, ui: &mut egui::Ui, actions: &mut Vec<ToolbarAction>) {
@@ -54,9 +75,15 @@ impl<'a> ToolbarView<'a> {
 
                     self.ui_toolbar_file_actions(ui, actions);
 
-                    widgets::vline_divider(ui, TOOLBAR_HEIGHT);
+                    if self.capabilities.output_folder {
+                        widgets::vline_divider(ui, TOOLBAR_HEIGHT);
+                        self.ui_toolbar_output_options(ui, &t, actions);
+                    }
 
-                    self.ui_toolbar_output_options(ui, &t, actions);
+                    if !self.capabilities.writes_files {
+                        widgets::vline_divider(ui, TOOLBAR_HEIGHT);
+                        self.ui_toolbar_download_all(ui, actions);
+                    }
 
                     // Right-aligned Workers stepper + Primary Start/Cancel Batch button
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -75,11 +102,24 @@ impl<'a> ToolbarView<'a> {
             actions.push(ToolbarAction::AddFiles);
         }
 
-        if widgets::ghost_button(ui, "folder-open", tr("action.add_folder"), TOOLBAR_HEIGHT)
-            .on_hover_text(tr("action.add_folder_tip"))
-            .clicked()
+        if self.capabilities.folders
+            && widgets::ghost_button(ui, "folder-open", tr("action.add_folder"), TOOLBAR_HEIGHT)
+                .on_hover_text(tr("action.add_folder_tip"))
+                .clicked()
         {
             actions.push(ToolbarAction::AddFolder);
+        }
+    }
+
+    fn ui_toolbar_download_all(&self, ui: &mut egui::Ui, actions: &mut Vec<ToolbarAction>) {
+        let label = format!("{} ({})", tr("action.download_all"), self.downloadable_count);
+        if ui
+            .add_enabled_ui(self.downloadable_count > 0, |ui| widgets::ghost_button(ui, "download", &label, TOOLBAR_HEIGHT))
+            .inner
+            .on_hover_text(tr("action.download_all_tip"))
+            .clicked()
+        {
+            actions.push(ToolbarAction::DownloadAll);
         }
     }
 
@@ -162,48 +202,24 @@ impl PgsApp {
             self.preferences.use_custom_output_dir,
             self.preferences.custom_output_dir.as_deref(),
             self.preferences.parallel_files,
-        );
+        )
+        .with_capabilities(self.capabilities)
+        .with_downloadable_count(self.items.iter().filter(|i| i.srt.is_some()).count());
         let mut actions = Vec::new();
         view.show(ui, &mut actions);
-        let ctx = ui.ctx().clone();
         for action in actions {
-            self.handle_toolbar_action(action, &ctx);
+            self.handle_toolbar_action(action);
         }
     }
 
-    pub fn handle_toolbar_action(&mut self, action: ToolbarAction, ctx: &egui::Context) {
+    pub fn handle_toolbar_action(&mut self, action: ToolbarAction) {
         match action {
-            ToolbarAction::AddFiles => {
-                if let Some(files) =
-                    rfd::FileDialog::new().add_filter("Blu-ray PGS Subtitle (.sup)", &["sup", "SUP"]).pick_files()
-                {
-                    let mut count = 0;
-                    for path in files {
-                        if self.add_file(path, Some(ctx)) {
-                            count += 1;
-                        }
-                    }
-                    if count > 0 {
-                        self.tab = WorkspaceTab::Queue;
-                        self.notify(format!("{} ({count})", tr("toast.added_files")), false);
-                    }
-                }
-            }
-            ToolbarAction::AddFolder => {
-                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                    let added = self.add_folder(&folder, Some(ctx));
-                    if added > 0 {
-                        self.tab = WorkspaceTab::Queue;
-                        self.notify(format!("{} ({added})", tr("toast.added_files")), false);
-                    } else {
-                        self.notify(tr("toast.no_sup_in_folder"), true);
-                    }
-                }
-            }
+            ToolbarAction::AddFiles => self.pick_inputs(false),
+            ToolbarAction::AddFolder => self.pick_inputs(true),
             ToolbarAction::ToggleCustomOutputDir(enabled) => {
                 self.preferences.use_custom_output_dir = enabled;
                 if enabled && self.preferences.custom_output_dir.is_none() {
-                    if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                    if let Some(folder) = self.platform.pick_output_folder() {
                         self.preferences.custom_output_dir = Some(folder);
                     } else {
                         self.preferences.use_custom_output_dir = false;
@@ -213,12 +229,13 @@ impl PgsApp {
                 self.save_preferences();
             }
             ToolbarAction::PickCustomFolder => {
-                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                if let Some(folder) = self.platform.pick_output_folder() {
                     self.preferences.custom_output_dir = Some(folder);
                     self.update_all_output_paths();
                     self.save_preferences();
                 }
             }
+            ToolbarAction::DownloadAll => self.download_srts(None),
             ToolbarAction::StartBatch => {
                 self.tab = WorkspaceTab::Queue;
                 self.start_batch();

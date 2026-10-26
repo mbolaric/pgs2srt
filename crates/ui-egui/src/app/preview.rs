@@ -1,11 +1,12 @@
 use super::*;
 
 impl PgsApp {
-    pub fn request_sample_preview(&mut self, id: usize, ctx: Option<&egui::Context>) {
-        let path = self.items.iter().find(|i| i.id == id).map(|i| i.input_path.clone());
-        if let Some(input_path) = path {
-            let handle = spawn_sample_loader(id, input_path, self.tx.clone(), ctx.cloned());
-            self.track_worker(handle);
+    pub fn request_sample_preview(&mut self, id: usize) {
+        let Some(input) = self.items.iter().find(|i| i.id == id).map(|i| i.input.clone()) else {
+            return;
+        };
+        if let Err(e) = self.platform.spawn(sample_job(id, input, self.mailbox())) {
+            log::warn!("Cannot load preview sample: {e}");
         }
     }
 

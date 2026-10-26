@@ -27,12 +27,13 @@ impl PgsApp {
         }
     }
 
-    pub fn add_file(&mut self, path: PathBuf, ctx: Option<&egui::Context>) -> bool {
-        if !is_sup(&path) {
-            return false;
-        }
-        let canonical = path.canonicalize().unwrap_or(path);
-        if self.items.iter().any(|item| item.input_path == canonical) {
+    /// Queues the `.sup` inputs that are not queued yet; returns how many were added.
+    pub fn add_inputs(&mut self, inputs: impl IntoIterator<Item = Input>) -> usize {
+        inputs.into_iter().map(|input| self.add_input(input)).filter(|&added| added).count()
+    }
+
+    pub fn add_input(&mut self, input: Input) -> bool {
+        if !is_sup(input.path()) || self.items.iter().any(|item| item.input == input) {
             return false;
         }
 
@@ -41,11 +42,11 @@ impl PgsApp {
         let default_lang = self.default_ocr_language().to_string();
         let custom_dir = self.get_effective_custom_output_dir();
         let (item, needs_auto_probe) = if self.preferences.auto_detect_language {
-            let item = SubtitleItem::new(id, canonical.clone(), &default_lang, custom_dir);
+            let item = SubtitleItem::new(id, input, &default_lang, custom_dir);
             let needs_probe = item.detected_language.is_none();
             (item, needs_probe)
         } else {
-            let item = SubtitleItem::new_with_fixed_language(id, canonical.clone(), &default_lang, custom_dir);
+            let item = SubtitleItem::new_with_fixed_language(id, input, &default_lang, custom_dir);
             (item, false)
         };
 
@@ -54,39 +55,43 @@ impl PgsApp {
             self.selected_id = Some(id);
         }
 
-        let sample_handle = spawn_sample_loader(id, canonical, self.tx.clone(), ctx.cloned());
-        self.track_worker(sample_handle);
+        self.request_sample_preview(id);
+
         if needs_auto_probe {
-            self.start_language_probe(id, false, ctx);
+            self.start_language_probe(id, false);
         }
         true
     }
 
-    pub(crate) fn track_worker(&mut self, handle: Option<std::thread::JoinHandle<()>>) {
-        self.workers.track(handle);
+    pub(crate) fn pick_inputs(&self, folder: bool) {
+        self.platform.pick_inputs(folder, self.mailbox());
     }
 
-    /// Signals all in-flight conversion and auto-detection threads to stop and waits for them
-    /// to release their `TessBaseAPI` instances before process teardown (`~ObjectCache()`).
-    pub fn shutdown_workers(&mut self) {
-        self.workers.shutdown();
-    }
-
-    pub fn add_folder(&mut self, folder: &Path, ctx: Option<&egui::Context>) -> usize {
-        let Ok(entries) = std::fs::read_dir(folder) else {
-            return 0;
-        };
-        let mut paths: Vec<PathBuf> =
-            entries.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_file() && is_sup(p)).collect();
-        paths.sort();
-
-        let mut added = 0;
-        for p in paths {
-            if self.add_file(p, ctx) {
-                added += 1;
-            }
+    fn on_inputs_picked(&mut self, inputs: Vec<Input>, folder: bool) {
+        let added = self.add_inputs(inputs);
+        if added > 0 {
+            self.tab = WorkspaceTab::Queue;
+            self.notify(format!("{} ({added})", tr("toast.added_files")), false);
+        } else if folder {
+            self.notify(tr("toast.no_sup_in_folder"), true);
         }
-        added
+    }
+
+    pub(crate) fn pick_destination(&mut self, id: usize) {
+        let Some(item) = self.items.iter_mut().find(|i| i.id == id) else {
+            return;
+        };
+        if let Some(chosen) = self.platform.pick_output_file(&item.output_path) {
+            item.output_path = chosen;
+            item.custom_output_override = true;
+        }
+    }
+
+    /// Signals all in-flight conversions and language probes to stop and waits for the platform's
+    /// workers to release their OCR engines before process teardown.
+    pub fn shutdown_workers(&mut self) {
+        self.workers.cancel_all();
+        self.platform.shutdown();
     }
 
     /// Validates language, model availability, output directory, and overwrite policy before spawning OCR.
@@ -101,21 +106,10 @@ impl PgsApp {
             ));
         }
         validate_output_name(&item.output_path).map_err(|e| e.to_string())?;
-
-        let parent = item.output_path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
-        if !parent.exists() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("{} {}: {e}", I18nService::get("app.cannot_create_output_folder"), parent.display()))?;
-        }
-
-        if !self.preferences.allow_overwrite && item.output_path.exists() {
-            return Err(format!("{}: {}", I18nService::get("files.output_already_exists"), item.output_path.display()));
-        }
-
-        Ok(())
+        self.platform.check_output(&item.output_path, self.preferences.allow_overwrite)
     }
 
-    pub fn start_item(&mut self, id: usize, ctx: Option<&egui::Context>) {
+    pub fn start_item(&mut self, id: usize) {
         let Some(idx) = self.items.iter().position(|i| i.id == id) else {
             return;
         };
@@ -131,6 +125,8 @@ impl PgsApp {
         self.cancel_probe(id);
 
         let item = &mut self.items[idx];
+        item.srt = None;
+        item.downloaded = false;
         item.status = ItemStatus::Converting {
             cue: 0,
             total: item.total_cues_hint.unwrap_or(0),
@@ -143,18 +139,14 @@ impl PgsApp {
         let run = self.workers.next_run();
         self.workers.active_cancellations.insert(id, (run, cancel.clone()));
 
-        let input_path = item.input_path.to_string_lossy().to_string();
-        let language = item.language.clone();
-        let output_path = item.output_path.to_string_lossy().to_string();
-
-        let handle = spawn_conversion(id, run, input_path, language, output_path, self.tx.clone(), cancel, ctx.cloned());
-        if handle.is_none() {
+        let job = conversion_job(id, run, item.input.clone(), item.language.clone(), cancel, self.mailbox());
+        if let Err(e) = self.platform.spawn(job) {
+            log::error!("Failed to start conversion: {e}");
             self.workers.active_cancellations.remove(&id);
             if let Some(item) = self.items.iter_mut().find(|i| i.id == id) {
-                item.status = ItemStatus::Failed("Failed to spawn worker thread".to_string());
+                item.status = ItemStatus::Failed(format!("Failed to spawn worker thread: {e}"));
             }
         }
-        self.track_worker(handle);
     }
 
     pub fn cancel_item(&mut self, id: usize) {
@@ -185,7 +177,7 @@ impl PgsApp {
     /// Starts batch conversion after checking for duplicate target `.srt` paths across queued items.
     pub fn start_batch(&mut self) {
         if self.preferences.use_custom_output_dir && self.preferences.custom_output_dir.is_none() {
-            if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+            if let Some(folder) = self.platform.pick_output_folder() {
                 self.preferences.custom_output_dir = Some(folder);
                 self.update_all_output_paths();
                 self.save_preferences();
@@ -236,7 +228,7 @@ impl PgsApp {
         self.notify(tr("status.batch_cancelled"), false);
     }
 
-    pub(super) fn handle_batch_concurrency(&mut self, ctx: &egui::Context) {
+    pub(super) fn handle_batch_concurrency(&mut self) {
         if !self.is_batch_running {
             return;
         }
@@ -253,7 +245,7 @@ impl PgsApp {
                 self.items.iter().filter(|i| matches!(i.status, ItemStatus::Pending)).take(slots).map(|i| i.id).collect();
 
             for id in pending_ids {
-                self.start_item(id, Some(ctx));
+                self.start_item(id);
             }
         }
 
@@ -273,15 +265,16 @@ impl PgsApp {
                 WorkerMessage::CueProgress { id, run, cue, total, start_ts, stop_ts, text, rgba } => {
                     self.on_worker_cue_progress(WorkerCueProgress { id, run, cue, total, start_ts, stop_ts, text, rgba });
                 }
-                WorkerMessage::Completed { id, run, cues_count } => self.on_worker_completed(id, run, cues_count),
+                WorkerMessage::Completed { id, run, cues_count, srt } => self.on_worker_completed(id, run, cues_count, srt),
                 WorkerMessage::Failed { id, run, error } => self.on_worker_failed(id, run, error),
                 WorkerMessage::SampleLoaded { id, sample } => self.on_worker_sample_loaded(id, sample),
-                WorkerMessage::LanguageProbed { id, detected, manual } => {
-                    self.on_worker_language_probed(id, detected, manual);
+                WorkerMessage::LanguageProbed { id, run, detected, manual } => {
+                    self.on_worker_language_probed(id, run, detected, manual);
                 }
+                WorkerMessage::LanguageInstalled { code, result } => self.on_language_installed(code, result),
+                WorkerMessage::InputsPicked { inputs, folder } => self.on_inputs_picked(inputs, folder),
             }
         }
-        self.workers.handles.retain(|h| !h.is_finished());
     }
 
     fn on_worker_started(&mut self, id: usize, run: u64, total: usize) {
@@ -313,14 +306,44 @@ impl PgsApp {
         }
     }
 
-    fn on_worker_completed(&mut self, id: usize, run: u64, cues_count: usize) {
+    fn on_worker_completed(&mut self, id: usize, run: u64, cues_count: usize, srt: Vec<u8>) {
         if !self.workers.is_current_run(id, run) {
             return;
         }
         self.workers.active_cancellations.remove(&id);
-        if let Some(item) = self.items.iter_mut().find(|i| i.id == id) {
-            item.total_cues_hint = Some(cues_count);
+        let Some(item) = self.items.iter_mut().find(|i| i.id == id) else {
+            return;
+        };
+        item.total_cues_hint = Some(cues_count);
+        if !self.capabilities.writes_files {
+            item.srt = Some(srt.into());
             item.status = ItemStatus::Completed { cues_count };
+            return;
+        }
+        item.status = match self.platform.deliver_srts(&[(&item.output_path, &srt)]) {
+            Ok(()) => ItemStatus::Completed { cues_count },
+            Err(error) => {
+                log::error!("Cannot save {}: {error}", item.output_path.display());
+                ItemStatus::Failed(error)
+            }
+        };
+    }
+
+    /// Delivers the kept SRT of `id`, or of every finished item, in one download.
+    pub fn download_srts(&mut self, id: Option<usize>) {
+        let picked = |item: &SubtitleItem| item.srt.is_some() && id.is_none_or(|id| item.id == id);
+        let srts: Vec<(&Path, &[u8])> =
+            self.items.iter().filter(|i| picked(i)).filter_map(|i| Some((i.output_path.as_path(), i.srt.as_deref()?))).collect();
+        if srts.is_empty() {
+            return;
+        }
+        if let Err(error) = self.platform.deliver_srts(&srts) {
+            log::error!("Cannot download subtitles: {error}");
+            self.notify(error, true);
+            return;
+        }
+        for item in self.items.iter_mut().filter(|i| picked(i)) {
+            item.downloaded = true;
         }
     }
 
@@ -355,11 +378,19 @@ impl PgsApp {
         self.sample_previews.entry(id).or_insert(preview);
     }
 
-    fn on_worker_language_probed(&mut self, id: usize, detected: Option<String>, manual: bool) {
-        let was_active_probe = self.workers.probe_cancellations.remove(&id).is_some();
-        if !was_active_probe {
+    fn on_worker_language_probed(&mut self, id: usize, run: u64, detected: Option<String>, manual: bool) {
+        if self.workers.running_probe == Some(run) {
+            self.workers.running_probe = None;
+        }
+        self.apply_probe_result(id, run, detected, manual);
+        self.start_next_probe();
+    }
+
+    pub(super) fn apply_probe_result(&mut self, id: usize, run: u64, detected: Option<String>, manual: bool) {
+        if !self.workers.is_current_probe(id, run) {
             return;
         }
+        self.workers.probe_cancellations.remove(&id);
         let custom_dir = self.get_effective_custom_output_dir().map(Path::to_path_buf);
         let ui_lang = self.preferences.ui_language;
         if let Some(item) = self.items.iter_mut().find(|i| i.id == id) {
@@ -388,7 +419,15 @@ impl PgsApp {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::io;
+    use std::rc::Rc;
+
+    use egui::DroppedFileHandle;
+    use pgs_ocr::OcrBackend;
+
     use super::*;
+    use crate::platform::Job;
 
     fn converting() -> ItemStatus {
         ItemStatus::Converting { cue: 0, total: 0, start_ts: 0, stop_ts: 0, last_text: String::new() }
@@ -426,9 +465,64 @@ mod tests {
         assert_eq!(app.items[0].status, converting(), "stale run must not touch the retried item");
         assert!(app.workers.is_current_run(id, new_run), "retried run must stay cancellable");
 
-        app.tx.send(WorkerMessage::Completed { id, run: new_run, cues_count: 7 }).unwrap();
+        app.tx.send(WorkerMessage::Completed { id, run: new_run, cues_count: 7, srt: Vec::new() }).unwrap();
         app.handle_incoming_messages();
         assert_eq!(app.items[0].status, ItemStatus::Completed { cues_count: 7 });
         assert!(!app.workers.active_cancellations.contains_key(&id));
+    }
+
+    /// Keeps SRTs for download like the web platform and records each delivery.
+    struct Downloads(Rc<RefCell<Vec<Vec<PathBuf>>>>);
+
+    impl Platform for Downloads {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::NONE
+        }
+
+        fn backend(&self) -> &dyn OcrBackend {
+            &Headless
+        }
+
+        fn spawn(&self, _job: Job) -> io::Result<()> {
+            Err(io::ErrorKind::Unsupported.into())
+        }
+
+        fn pick_inputs(&self, _folder: bool, _mailbox: Mailbox) {}
+
+        fn take_dropped_files(&self, _files: Vec<DroppedFileHandle>, _mailbox: Mailbox) {}
+
+        fn deliver_srts(&self, srts: &[(&Path, &[u8])]) -> Result<(), String> {
+            self.0.borrow_mut().push(srts.iter().map(|(output, _)| output.to_path_buf()).collect());
+            Ok(())
+        }
+
+        fn load_preferences(&self) -> Preferences {
+            Preferences::default()
+        }
+
+        fn save_preferences(&self, _preferences: &Preferences) {}
+    }
+
+    #[test]
+    fn without_file_access_srts_are_kept_until_downloaded() {
+        let delivered = Rc::default();
+        let mut app = PgsApp::with_platform(Box::new(Downloads(Rc::clone(&delivered))));
+        for id in [1, 2] {
+            app.items.push(SubtitleItem::new_with_fixed_language(id, PathBuf::from(format!("/films/{id}.sup")), "eng", None));
+            let run = app.workers.next_run();
+            app.workers.active_cancellations.insert(id, (run, Arc::new(AtomicBool::new(false))));
+            app.tx.send(WorkerMessage::Completed { id, run, cues_count: 1, srt: b"1\n".to_vec() }).unwrap();
+        }
+        app.handle_incoming_messages();
+        assert!(delivered.borrow().is_empty());
+        assert!(app.items.iter().all(SubtitleItem::awaits_download));
+
+        app.download_srts(Some(2));
+        assert_eq!(app.items.iter().map(SubtitleItem::awaits_download).collect::<Vec<_>>(), [true, false]);
+
+        app.download_srts(None);
+        let (first, second) = (PathBuf::from("/films/1.eng.srt"), PathBuf::from("/films/2.eng.srt"));
+        assert_eq!(*delivered.borrow(), [vec![second.clone()], vec![first, second]]);
+        assert!(!app.items.iter().any(SubtitleItem::awaits_download));
     }
 }
