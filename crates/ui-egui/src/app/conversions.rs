@@ -42,7 +42,7 @@ impl PgsApp {
         let custom_dir = self.get_effective_custom_output_dir();
         let (item, needs_auto_probe) = if self.preferences.auto_detect_language {
             let item = SubtitleItem::new(id, canonical.clone(), &default_lang, custom_dir);
-            let needs_probe = item.detected_language.is_none() && self.installed_langs.len() > 1;
+            let needs_probe = item.detected_language.is_none();
             (item, needs_probe)
         } else {
             let item = SubtitleItem::new_with_fixed_language(id, canonical.clone(), &default_lang, custom_dir);
@@ -370,9 +370,14 @@ impl PgsApp {
                 if !matches!(item.status, ItemStatus::Converting { .. }) {
                     item.update_language(code.clone(), custom_dir.as_deref());
                 }
-                if manual {
+                let installed = self.installed_langs.contains(&code);
+                if manual || !installed {
                     let label = format_language_label(&code, ui_lang);
-                    self.toast = Some((format!("{} {label}", tr("toast.detected_lang")), false, 0.0));
+                    let mut message = format!("{} {label}", tr("toast.detected_lang"));
+                    if !installed {
+                        message = format!("{message} ({})", tr("badge.missing_model"));
+                    }
+                    self.toast = Some((message, !installed, 0.0));
                 }
             } else if manual {
                 self.toast = Some((tr("toast.detect_none").to_string(), true, 0.0));

@@ -8,10 +8,6 @@ description = "Core library for parsing PGS subtitles, image extraction, and SRT
 
 [dependencies]
 pgs = { workspace = true }
-tiff = { workspace = true }
-tesseract = { workspace = true }
-tesseract-plumbing = { workspace = true }
+pgs-ocr = { workspace = true }
 log = { workspace = true }
 log4rs = { workspace = true }
-sha1 = { workspace = true }
-ureq = { workspace = true }

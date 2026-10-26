@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use crate::dirs;
 use crate::error::{Error, Result};
 use crate::language::LanguageService;
 
@@ -27,11 +28,9 @@ pub fn resolve_path(value: &str, base: &Path) -> Result<PathBuf> {
         return Err(Error::InvalidInput(LanguageService::get("files.enter_an_output_path").into()));
     }
     let path = if value == "~" || value.starts_with("~/") {
-        let home = std::env::var_os("HOME");
-        #[cfg(windows)]
-        let home = home.or_else(|| std::env::var_os("USERPROFILE"));
-        let home = home.ok_or_else(|| Error::InvalidInput(LanguageService::get("files.use_an_absolute_path_the").into()))?;
-        PathBuf::from(home).join(value.strip_prefix("~/").unwrap_or(""))
+        let home =
+            dirs::home_dir().ok_or_else(|| Error::InvalidInput(LanguageService::get("files.use_an_absolute_path_the").into()))?;
+        home.join(value.strip_prefix("~/").unwrap_or(""))
     } else {
         PathBuf::from(value)
     };

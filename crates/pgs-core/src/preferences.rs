@@ -8,6 +8,7 @@ use std::{
 static NEXT_SAVE: AtomicU64 = AtomicU64::new(0);
 
 use crate::{
+    dirs,
     error::{Error, Result},
     language::{LanguageService, UiLanguage},
 };
@@ -148,15 +149,8 @@ impl Preferences {
 }
 
 pub fn path() -> Result<PathBuf> {
-    #[cfg(windows)]
-    let base = std::env::var_os("APPDATA").or_else(|| std::env::var_os("LOCALAPPDATA")).map(PathBuf::from);
-    #[cfg(target_os = "macos")]
-    let base = std::env::var_os("HOME").map(PathBuf::from).map(|home| home.join("Library/Application Support"));
-    #[cfg(not(any(windows, target_os = "macos")))]
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")));
-    base.map(|base| base.join("pgs2srt/settings.conf"))
+    dirs::config_dir()
+        .map(|dir| dir.join("settings.conf"))
         .ok_or_else(|| Error::InvalidInput(LanguageService::get("preferences.cannot_find_the_settings_folder").into()))
 }
 

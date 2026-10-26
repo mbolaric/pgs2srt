@@ -11,7 +11,7 @@ use egui::{
 };
 use pgs_core::files::{is_sup, validate_language, validate_output_name};
 use pgs_core::helpers::presentation_ts_into_string;
-use pgs_core::language::{catalog_models, installed_languages, start_download, tessdata_directory, ModelInfo};
+use pgs_core::ocr::{catalog_models, installed_languages, start_download, tessdata_directory, ModelInfo};
 use pgs_core::{I18nService, Preferences, UiLanguage};
 
 use crate::i18n::{format_language_label, language_matches_search, tr};

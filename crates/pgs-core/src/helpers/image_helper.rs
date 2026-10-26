@@ -1,11 +1,11 @@
 use pgs::PgsDisplaySet;
+use pgs_ocr::OcrImage;
 
 use crate::error::{Error, Result};
 
-/// Extracts the decoded true-color RGBA image data for a PGS display set, tightly cropped around
-/// visible (`alpha > 0`) subtitle pixels so full-canvas `1920x1080` ODS frames render crisply.
-/// Returns `(width, height, rgba_bytes)` where each pixel has 4 bytes `(R, G, B, A)`.
-pub fn get_rgba_image(ds: &PgsDisplaySet) -> Result<(usize, usize, Vec<u8>)> {
+/// Decodes the display set bitmap as `0xAA_RR_GG_BB` rows, or as dark-on-light gray (alpha `0x00`)
+/// when `gray` is set, after checking the rows cover the `(width, height)` of the image header.
+fn decode(ds: &PgsDisplaySet, gray: bool) -> Result<(usize, usize, Vec<Vec<u32>>)> {
     let ods = ds.ods.as_ref().ok_or_else(|| Error::ProcessDisplaySet("Subtitle image segment (ODS) is missing.".to_string()))?;
     let width = ods.width as usize;
     let height = ods.height as usize;
@@ -14,12 +14,29 @@ pub fn get_rgba_image(ds: &PgsDisplaySet) -> Result<(usize, usize, Vec<u8>)> {
         return Err(Error::ProcessDisplaySet(format!("Invalid subtitle image dimensions: {width}x{height}")));
     }
 
-    // `gray = false` decodes 32-bit ARGB (`0xAA_RR_GG_BB`) preserving true Blu-ray colors and alpha.
-    // (`gray = true` leaves bits 24..31 as `0x00`, which would produce alpha = 0 invisible pixels!)
-    let pixels = ds.get_decoded_image(false)?;
+    let pixels = ds.get_decoded_image(gray)?;
     if pixels.len() < height || pixels.iter().take(height).any(|row| row.len() < width) {
         return Err(Error::ProcessDisplaySet("Decoded subtitle dimensions do not match image header.".to_string()));
     }
+    Ok((width, height, pixels))
+}
+
+/// The display set as an OCR input image.
+pub(crate) fn ocr_image(ds: &PgsDisplaySet) -> Result<OcrImage> {
+    let (width, height, pixels) = decode(ds, true)?;
+    let rgb = pixels[..height]
+        .iter()
+        .flat_map(|row| &row[..width])
+        .flat_map(|&pixel| [(pixel >> 16) as u8, (pixel >> 8) as u8, pixel as u8])
+        .collect();
+    Ok(OcrImage::from_rgb(width, height, rgb)?)
+}
+
+/// Extracts the decoded true-color RGBA image data for a PGS display set, tightly cropped around
+/// visible (`alpha > 0`) subtitle pixels so full-canvas `1920x1080` ODS frames render crisply.
+/// Returns `(width, height, rgba_bytes)` where each pixel has 4 bytes `(R, G, B, A)`.
+pub fn get_rgba_image(ds: &PgsDisplaySet) -> Result<(usize, usize, Vec<u8>)> {
+    let (width, height, pixels) = decode(ds, false)?;
 
     let mut min_x = width;
     let mut min_y = height;
@@ -84,4 +101,56 @@ pub fn get_rgba_image(ds: &PgsDisplaySet) -> Result<(usize, usize, Vec<u8>)> {
     }
 
     Ok((out_w, out_h, rgba))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use pgs::{
+        PgsOdsSegment, PgsOdsSequenceFlag, PgsPcsSegment, PgsPdsSegment, PgsPdsSegmentPaletteEntry, PgsSegmentHeader,
+        PgsWdsSegment,
+    };
+
+    use super::*;
+
+    fn entry(palette_entry_id: u8, luminance: u8, transparency: u8) -> PgsPdsSegmentPaletteEntry {
+        PgsPdsSegmentPaletteEntry {
+            palette_entry_id,
+            luminance,
+            color_difference_red: 128,
+            color_difference_blue: 128,
+            transparency,
+        }
+    }
+
+    #[test]
+    fn ocr_image_is_dark_text_on_light_background() -> Result<()> {
+        let header = PgsSegmentHeader::default;
+        let ds = PgsDisplaySet {
+            pcs: Some(Rc::new(PgsPcsSegment::default())),
+            wds: Some(Rc::new(PgsWdsSegment { header: header(), number_of_windows: 0, windows: Vec::new() })),
+            pds: Some(Rc::new(PgsPdsSegment {
+                header: header(),
+                palette_id: 0,
+                palette_version_number: 0,
+                palette_entries: vec![entry(1, 235, 255), entry(2, 235, 0)],
+            })),
+            ods: Some(Rc::new(PgsOdsSegment {
+                header: header(),
+                object_id: 0,
+                object_version_number: 0,
+                last_in_sequence_flag: PgsOdsSequenceFlag::Both,
+                object_data_length: 8,
+                width: 2,
+                height: 2,
+                object_data: vec![1, 2, 0, 0, 2, 1, 0, 0],
+            })),
+        };
+
+        let image = ocr_image(&ds)?;
+        assert_eq!((image.width(), image.height()), (2, 2));
+        assert_eq!(image.rgb(), [20, 20, 20, 255, 255, 255, 255, 255, 255, 20, 20, 20]);
+        Ok(())
+    }
 }

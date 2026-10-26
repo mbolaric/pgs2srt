@@ -13,6 +13,8 @@ use log4rs::config::{Appender, Logger, Root};
 use log4rs::encode::pattern::PatternEncoder;
 use log4rs::Config;
 
+use crate::dirs;
+
 const FILE_PATTERN: &str = "{d(%Y-%m-%d %H:%M:%S%.3f)} {l:<5} [{T}] {t} - {m}{n}";
 const CONSOLE_PATTERN: &str = "{l:<5} {t} - {m}{n}";
 const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
@@ -20,21 +22,8 @@ const ROLLED_LOG_FILES: u32 = 3;
 
 const OWN_CRATES: &[&str] = &["pgs_core", "ui_egui", "pgs2srt", "pgs2srt_desktop"];
 
-pub fn directory() -> Option<PathBuf> {
-    #[cfg(windows)]
-    let dir = std::env::var_os("LOCALAPPDATA").map(|base| PathBuf::from(base).join("pgs2srt/logs"));
-    #[cfg(target_os = "macos")]
-    let dir = std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Logs/pgs2srt"));
-    #[cfg(not(any(windows, target_os = "macos")))]
-    let dir = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
-        .map(|base| base.join("pgs2srt/logs"));
-    dir
-}
-
 pub fn init(app: &str, console: bool) -> Option<PathBuf> {
-    let file = directory().and_then(|dir| match file_appender(&dir, app) {
+    let file = dirs::log_dir().and_then(|dir| match file_appender(&dir, app) {
         Ok(appender) => Some((dir.join(format!("{app}.log")), appender)),
         Err(error) => {
             eprintln!("pgs2srt: cannot open log file in {}: {error}", dir.display());

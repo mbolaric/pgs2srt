@@ -137,7 +137,7 @@ pub fn search_input(
         }
     }
 
-    let edit_resp = ui
+    let mut edit_resp = ui
         .scope_builder(egui::UiBuilder::new().max_rect(inner_rect).layout(Layout::left_to_right(Align::Center)), |ui| {
             ui.add(
                 egui::TextEdit::singleline(query)
@@ -155,6 +155,7 @@ pub fn search_input(
 
     if clear_clicked {
         query.clear();
+        edit_resp.mark_changed();
     }
     edit_resp
 }
@@ -265,5 +266,36 @@ mod tests {
             (left_empty - left_typed).abs() < 0.01,
             "Sibling shifted horizontally when search query changed: empty={left_empty}, typed={left_typed}"
         );
+    }
+
+    #[test]
+    fn search_input_clear_button_empties_query_and_reports_change() {
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        theme::apply(&ctx, theme::ThemeKind::Light);
+
+        let mut query = "hrv".to_string();
+        let mut frame = |events: Vec<egui::Event>| {
+            let mut response = None;
+            let out = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+                response = Some(search_input(ui, "test_search", &mut query, "Search...", 240.0, 30.0));
+            });
+            out.drop_without_applying_deltas();
+            response.expect("search input was shown")
+        };
+
+        let edit = frame(Vec::new()).rect;
+        let x_button = pos2(edit.right() + 14.0, edit.center().y);
+        let button = |pressed| egui::Event::PointerButton {
+            pos: x_button,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        frame(vec![egui::Event::PointerMoved(x_button), button(true)]);
+        let released = frame(vec![button(false)]);
+
+        assert!(released.changed(), "clearing must report a change so callers apply the empty filter");
+        assert!(query.is_empty());
     }
 }

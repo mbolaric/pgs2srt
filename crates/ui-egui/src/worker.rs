@@ -6,7 +6,7 @@ use std::thread::JoinHandle;
 static PROBE_LOCK: Mutex<()> = Mutex::new(());
 
 use crossbeam_channel::Sender;
-use pgs_core::language::probe_language_from_file_cancellable;
+use pgs_core::language::probe_language_from_file;
 use pgs_core::{extract_sample_cue, Error, PgsToSrt, ProgressReporter, SampleCue};
 
 #[derive(Clone, Debug)]
@@ -213,7 +213,7 @@ pub fn spawn_language_probe(
         if cancelled.load(Ordering::Relaxed) {
             return;
         }
-        let detected = probe_language_from_file_cancellable(&input_path, &candidates, &cancelled);
+        let detected = probe_language_from_file(&input_path, &candidates, &cancelled);
         if cancelled.load(Ordering::Relaxed) {
             return;
         }

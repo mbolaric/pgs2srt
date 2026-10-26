@@ -227,7 +227,7 @@ mod tests {
 
     use super::super::catalog::extract_placeholders;
     use super::*;
-    use crate::language::download_catalog;
+    use crate::ocr::catalog_models;
 
     #[test]
     fn locale_files_have_valid_syntax_no_duplicate_keys_and_complete_parity() {
@@ -279,10 +279,11 @@ mod tests {
 
     #[test]
     fn every_bundled_ocr_model_has_display_name_in_reference_locale() {
-        for code in download_catalog() {
+        for model in catalog_models() {
             assert!(
-                I18nService::ocr_language_name_for(UiLanguage::English, &code).is_some(),
-                "Missing ocr.{code} display name in en.lang"
+                I18nService::ocr_language_name_for(UiLanguage::English, &model.code).is_some(),
+                "Missing ocr.{} display name in en.lang",
+                model.code
             );
         }
     }

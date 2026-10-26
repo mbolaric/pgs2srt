@@ -1,12 +1,14 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use pgs::{PgsDisplaySet, PgsDisplaySetState};
-use tesseract::plumbing::leptonica_plumbing::Pix;
-use tesseract::PageSegMode;
+use pgs::PgsDisplaySet;
+use pgs_ocr::{is_selectable_language, OcrBackend, OcrImage, Purpose};
 
-use crate::helpers::{get_tiff_stream, ManagedTesseract};
-use crate::language::{is_selectable_ocr_language, recognition_data_path};
+use crate::cues::{self, cues};
+use crate::helpers::ocr_image;
+use crate::ocr;
 
 /// Unambiguous full language names (English + native) mapped to Tesseract ISO-639-2/script codes.
 const FULL_LANGUAGE_NAMES: &[(&[&str], &str)] = &[
@@ -305,69 +307,6 @@ fn language_script_family(code: &str) -> ScriptFamily {
 struct OcrSampleRun {
     text: String,
     mean_conf: f32,
-}
-
-fn run_ocr_on_tiff_samples(lang: &str, tiff_samples: &[Vec<u8>], cancel: &AtomicBool) -> Option<OcrSampleRun> {
-    if cancel.load(Ordering::Relaxed) {
-        return None;
-    }
-    let data_path = recognition_data_path(lang).unwrap_or(None);
-    let mut api = ManagedTesseract::new(data_path.as_deref(), lang)
-        .inspect_err(|e| log::warn!("Language probe skipped {lang}: {e}"))
-        .ok()?;
-
-    let mut combined = String::new();
-    let mut weighted_conf_sum = 0.0_f32;
-    let mut total_weight = 0.0_f32;
-
-    for tiff in tiff_samples {
-        if cancel.load(Ordering::Relaxed) {
-            return None;
-        }
-        let Ok(pix) = Pix::read_mem(tiff) else {
-            return None;
-        };
-        let mut cue_text = String::new();
-        let mut cue_conf = 0_i32;
-
-        for mode in [PageSegMode::PsmSingleBlock, PageSegMode::PsmAuto] {
-            if cancel.load(Ordering::Relaxed) {
-                return None;
-            }
-            let tess = api.as_mut();
-            tess.set_page_seg_mode(mode.as_tess_page_seg_mode());
-            tess.set_image_2(&pix);
-            tess.set_source_resolution(300);
-            if tess.recognize().is_err() {
-                return None;
-            }
-            cue_conf = tess.mean_text_conf().clamp(0, 100);
-            if let Ok(raw) = tess.get_utf8_text() {
-                let t = raw.as_ref().to_string_lossy().into_owned();
-                if !t.trim().is_empty() {
-                    cue_text = t;
-                    break;
-                }
-            }
-        }
-
-        let trimmed = cue_text.trim();
-        if !trimmed.is_empty() {
-            let char_weight = trimmed.chars().filter(|c| !c.is_whitespace()).count() as f32;
-            weighted_conf_sum += (cue_conf as f32) * char_weight;
-            total_weight += char_weight;
-            if !combined.is_empty() {
-                combined.push('\n');
-            }
-            combined.push_str(trimmed);
-        }
-    }
-
-    if total_weight <= 0.0 || cancel.load(Ordering::Relaxed) {
-        return None;
-    }
-
-    Some(OcrSampleRun { text: combined, mean_conf: weighted_conf_sum / total_weight })
 }
 
 fn is_latin_alpha(c: char) -> bool {
@@ -1051,16 +990,42 @@ fn score_linguistic_profile(profile: &LangLinguisticProfile, texts: &[&str]) -> 
     score
 }
 
+fn family_profiles(family: ScriptFamily) -> &'static [LangLinguisticProfile] {
+    match family {
+        ScriptFamily::Latin => LATIN_PROFILES,
+        ScriptFamily::Cyrillic => CYRILLIC_PROFILES,
+        _ => &[],
+    }
+}
+
+/// The language without an installed model whose letters and words fit `text` clearly better than
+/// the `detected` language that read it.
+fn best_missing_profile(
+    profiles: &'static [LangLinguisticProfile],
+    detected: &str,
+    installed: &[String],
+    text: &str,
+) -> Option<&'static str> {
+    let score = |profile: &LangLinguisticProfile| score_linguistic_profile(profile, &[text]);
+    let detected_score = profiles.iter().find(|profile| profile.code == detected).map_or(0.0, score);
+    profiles
+        .iter()
+        .filter(|profile| !installed.iter().any(|code| code == profile.code))
+        .map(|profile| (profile.code, score(profile)))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .filter(|&(_, best)| best > (detected_score * 1.5).max(detected_score + 20.0))
+        .map(|(code, _)| code)
+}
+
 /// Selects up to `max_samples` Complete display sets distributed across `10%..85%` of the stream
 /// so studio logos and end credits are avoided in favor of real spoken dialogue.
-fn select_dialogue_tiff_samples(display_sets: &[PgsDisplaySet], max_samples: usize, cancel: &AtomicBool) -> Vec<Vec<u8>> {
-    let complete: Vec<&PgsDisplaySet> = display_sets.iter().filter(|ds| ds.state() == PgsDisplaySetState::Complete).collect();
-
-    if complete.is_empty() || max_samples == 0 {
+fn select_dialogue_samples(display_sets: &[PgsDisplaySet], max_samples: usize, cancel: &AtomicBool) -> Vec<OcrImage> {
+    let cues = cues(display_sets);
+    if cues.is_empty() || max_samples == 0 {
         return Vec::new();
     }
 
-    let n = complete.len();
+    let n = cues.len();
     let indices: Vec<usize> = if n <= max_samples {
         if n > 2 {
             (1..n).collect()
@@ -1079,311 +1044,308 @@ fn select_dialogue_tiff_samples(display_sets: &[PgsDisplaySet], max_samples: usi
         if cancel.load(Ordering::Relaxed) {
             return Vec::new();
         }
-        if let Ok(cursor) = get_tiff_stream(complete[idx]) {
-            let bytes = cursor.into_inner();
-            if !bytes.is_empty() {
-                samples.push(bytes);
-            }
+        if let Ok(image) = ocr_image(cues[idx].display_set) {
+            samples.push(image);
         }
     }
     samples
 }
 
-/// Probes candidate installed languages directly from a `.sup` file path.
-pub fn probe_language_from_file(path: &Path, candidate_languages: &[String]) -> Option<String> {
-    probe_language_from_file_cancellable(path, candidate_languages, &AtomicBool::new(false))
-}
-
 /// Probes candidate installed languages directly from a `.sup` file path, aborting promptly when `cancel` is set.
-pub fn probe_language_from_file_cancellable(path: &Path, candidate_languages: &[String], cancel: &AtomicBool) -> Option<String> {
-    if cancel.load(Ordering::Relaxed) {
-        return None;
-    }
-    let path_str = path.to_str()?;
-    let parser = pgs::PgsParser::parse(path_str).ok()?;
-    if cancel.load(Ordering::Relaxed) {
-        return None;
-    }
-    probe_language_from_display_sets_cancellable(parser.get_display_sets(), candidate_languages, cancel)
+pub fn probe_language_from_file(path: &Path, candidate_languages: &[String], cancel: &AtomicBool) -> Option<String> {
+    let parser = cues::parse_file(path).ok()?;
+    probe_language_from_display_sets(parser.get_display_sets(), candidate_languages, cancel)
 }
 
-/// Probes candidate installed languages against representative dialogue cues in `display_sets`.
-pub fn probe_language_from_display_sets(display_sets: &[PgsDisplaySet], candidate_languages: &[String]) -> Option<String> {
-    probe_language_from_display_sets_cancellable(display_sets, candidate_languages, &AtomicBool::new(false))
-}
-
-/// Probes candidate installed languages against representative dialogue cues in `display_sets`, aborting when `cancel` is set.
-pub fn probe_language_from_display_sets_cancellable(
+/// Two-stage visual + linguistic language detector run on representative dialogue cues in `display_sets`:
+/// 1. Identifies the genuine writing script (Latin, Cyrillic, Japanese, Chinese, Korean, etc.)
+///    using OCR confidence and anti-hallucination glyph checks.
+/// 2. Disambiguates languages within that script (e.g. Croatian `hrv` vs English `eng`, German `deu`,
+///    Serbian `srp_latn`, Slovenian `slv`, Czech `ces`, Polish `pol`) via diacritics, stopwords,
+///    and finalist OCR confidence verification.
+pub fn probe_language_from_display_sets(
     display_sets: &[PgsDisplaySet],
     candidate_languages: &[String],
     cancel: &AtomicBool,
 ) -> Option<String> {
-    let samples = select_dialogue_tiff_samples(display_sets, 10, cancel);
-    probe_language_from_tiff_samples_cancellable(&samples, candidate_languages, cancel)
+    let samples = select_dialogue_samples(display_sets, 10, cancel);
+    Probe { backend: ocr::backend(), samples: &samples, cancel, runs: RefCell::default() }.language(candidate_languages)
 }
 
-/// Two-stage visual + linguistic language detector operating on encoded TIFF subtitle bitmaps:
-/// 1. Identifies the genuine writing script (Latin, Cyrillic, Japanese, Chinese, Korean, etc.)
-///    using Tesseract confidence (`mean_text_conf`) and anti-hallucination glyph checks.
-/// 2. Disambiguates languages within that script (e.g. Croatian `hrv` vs English `eng`, German `deu`,
-///    Serbian `srp_latn`, Slovenian `slv`, Czech `ces`, Polish `pol`) via diacritics, stopwords,
-///    and finalist OCR confidence verification.
-pub fn probe_language_from_tiff_samples(tiff_samples: &[Vec<u8>], candidate_languages: &[String]) -> Option<String> {
-    probe_language_from_tiff_samples_cancellable(tiff_samples, candidate_languages, &AtomicBool::new(false))
+struct Probe<'a> {
+    backend: &'a dyn OcrBackend,
+    samples: &'a [OcrImage],
+    cancel: &'a AtomicBool,
+    runs: RefCell<HashMap<(String, usize), Option<OcrSampleRun>>>,
 }
 
-/// Cancellable variant of [`probe_language_from_tiff_samples`].
-pub fn probe_language_from_tiff_samples_cancellable(
-    tiff_samples: &[Vec<u8>],
-    candidate_languages: &[String],
-    cancel: &AtomicBool,
-) -> Option<String> {
-    if tiff_samples.is_empty() || cancel.load(Ordering::Relaxed) {
-        return None;
+impl Probe<'_> {
+    fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
     }
 
-    let candidates: Vec<String> = candidate_languages.iter().filter(|c| is_selectable_ocr_language(c)).cloned().collect();
-    if candidates.is_empty() {
-        return None;
-    }
-    if candidates.len() == 1 {
-        return Some(candidates[0].clone());
+    fn quick_samples(&self) -> &[OcrImage] {
+        &self.samples[..self.samples.len().min(5)]
     }
 
-    let quick_samples = &tiff_samples[..tiff_samples.len().min(5)];
-    let (winning_family, anchor_fallback) = probe_anchor_script_family(&candidates, quick_samples, cancel)?;
-
-    let family_candidates: Vec<String> =
-        candidates.iter().filter(|c| language_script_family(c) == winning_family).cloned().collect();
-
-    if family_candidates.len() == 1 {
-        return Some(family_candidates[0].clone());
-    }
-
-    // Stage 2: Linguistic + Diacritic disambiguation inside the winning script family.
-    match winning_family {
-        ScriptFamily::Latin => {
-            disambiguate_latin_candidates(&family_candidates, tiff_samples, anchor_fallback.as_deref(), cancel)
+    fn run(&self, lang: &str, samples: &[OcrImage]) -> Option<OcrSampleRun> {
+        let key = (lang.to_owned(), samples.len());
+        if let Some(run) = self.runs.borrow().get(&key) {
+            return run.clone();
         }
-        ScriptFamily::Cyrillic => disambiguate_cyrillic_candidates(&family_candidates, tiff_samples, quick_samples, cancel),
-        _ => disambiguate_by_confidence(&family_candidates, quick_samples, cancel),
-    }
-}
-
-fn probe_anchor_script_family(
-    candidates: &[String],
-    quick_samples: &[Vec<u8>],
-    cancel: &AtomicBool,
-) -> Option<(ScriptFamily, Option<String>)> {
-    let has = |code: &str| candidates.iter().any(|c| c == code);
-    let pick_first = |prefs: &[&str], family: ScriptFamily| -> Option<String> {
-        for &p in prefs {
-            if has(p) {
-                return Some(p.to_string());
-            }
-        }
-        candidates.iter().find(|c| language_script_family(c) == family).cloned()
-    };
-
-    let mut script_anchors: Vec<(ScriptFamily, String)> = Vec::new();
-    for (family, prefs) in [
-        (ScriptFamily::Latin, &["hrv", "ces", "deu", "fra", "spa", "eng"][..]),
-        (ScriptFamily::Cyrillic, &["rus", "srp", "ukr", "bul"][..]),
-        (ScriptFamily::Japanese, &["jpn"][..]),
-        (ScriptFamily::Chinese, &["chi_sim", "chi_tra"][..]),
-        (ScriptFamily::Korean, &["kor"][..]),
-        (ScriptFamily::Greek, &["ell"][..]),
-        (ScriptFamily::Arabic, &["ara", "fas"][..]),
-        (ScriptFamily::Hebrew, &["heb"][..]),
-        (ScriptFamily::Other, &["hin", "tha"][..]),
-    ] {
-        if let Some(anchor) = pick_first(prefs, family) {
-            script_anchors.push((family, anchor));
-        }
+        let run = self.read(lang, samples);
+        self.runs.borrow_mut().insert(key, run.clone());
+        run
     }
 
-    let mut script_results: Vec<(ScriptFamily, String, OcrSampleRun, f32)> = Vec::new();
-    for (family, anchor) in script_anchors {
-        if cancel.load(Ordering::Relaxed) {
+    /// Reads `samples` with `lang`, weighting each cue's confidence by its character count.
+    fn read(&self, lang: &str, samples: &[OcrImage]) -> Option<OcrSampleRun> {
+        if self.cancelled() {
             return None;
         }
-        if let Some(run) = run_ocr_on_tiff_samples(&anchor, quick_samples, cancel) {
-            let fit = evaluate_script_fit(family, &run);
-            if fit > 0.0 {
-                script_results.push((family, anchor, run, fit));
+        let mut engine = self
+            .backend
+            .engine(lang, Purpose::LanguageProbe)
+            .inspect_err(|e| log::warn!("Language probe skipped {lang}: {e}"))
+            .ok()?;
+
+        let mut combined = String::new();
+        let mut weighted_conf_sum = 0.0_f32;
+        let mut total_weight = 0.0_f32;
+
+        for sample in samples {
+            if self.cancelled() {
+                return None;
+            }
+            let recognition = engine.recognize(sample).ok()?;
+            let trimmed = recognition.text.trim();
+            if !trimmed.is_empty() {
+                let char_weight = trimmed.chars().filter(|c| !c.is_whitespace()).count() as f32;
+                weighted_conf_sum += recognition.confidence * char_weight;
+                total_weight += char_weight;
+                if !combined.is_empty() {
+                    combined.push('\n');
+                }
+                combined.push_str(trimmed);
             }
         }
+
+        if total_weight <= 0.0 || self.cancelled() {
+            return None;
+        }
+
+        Some(OcrSampleRun { text: combined, mean_conf: weighted_conf_sum / total_weight })
     }
 
-    if script_results.is_empty() || cancel.load(Ordering::Relaxed) {
-        return None;
+    /// Detects the language among the installed `candidate_languages`, or a language with no installed
+    /// model when the text read by the detected one clearly is in it.
+    fn language(&self, candidate_languages: &[String]) -> Option<String> {
+        if self.samples.is_empty() || self.cancelled() {
+            return None;
+        }
+
+        let candidates: Vec<String> = candidate_languages.iter().filter(|c| is_selectable_language(c)).cloned().collect();
+        let (winning_family, anchor) = self.anchor_script_family(&candidates)?;
+        let family_candidates: Vec<String> =
+            candidates.iter().filter(|c| language_script_family(c) == winning_family).cloned().collect();
+
+        // Stage 2: Linguistic + Diacritic disambiguation inside the winning script family.
+        let detected = match (winning_family, family_candidates.as_slice()) {
+            (_, [only]) => Some(only.clone()),
+            (ScriptFamily::Latin, _) => self.disambiguate_latin(&family_candidates, &anchor),
+            (ScriptFamily::Cyrillic, _) => self.disambiguate_cyrillic(&family_candidates),
+            _ => self.disambiguate_by_confidence(&family_candidates),
+        }?;
+        Some(self.missing_language(&detected, &candidates).unwrap_or(detected))
     }
 
-    // If Latin achieved high confidence (>= 70) with clean multi-letter words, suppress CJK/Other hallucinations.
-    let latin_strong = script_results
-        .iter()
-        .find(|(f, _, _, _)| *f == ScriptFamily::Latin)
-        .is_some_and(|(_, _, run, fit)| run.mean_conf >= 70.0 && *fit >= 45.0);
-
-    if latin_strong {
-        script_results.retain(|(f, _, _, _)| {
-            !matches!(f, ScriptFamily::Japanese | ScriptFamily::Chinese | ScriptFamily::Korean | ScriptFamily::Other)
-        });
+    fn missing_language(&self, detected: &str, installed: &[String]) -> Option<String> {
+        let profiles = family_profiles(language_script_family(detected));
+        if profiles.iter().all(|profile| installed.iter().any(|code| code == profile.code)) {
+            return None;
+        }
+        let run = self.run(detected, self.samples)?;
+        best_missing_profile(profiles, detected, installed, &run.text).map(str::to_owned)
     }
 
-    script_results.sort_by(|a, b| b.3.total_cmp(&a.3));
-    let winning_family = script_results[0].0;
-    let anchor_fallback = script_results.first().map(|r| r.1.clone());
-    Some((winning_family, anchor_fallback))
-}
+    /// Reads the quick samples with one anchor language per script and returns the best-fitting
+    /// script together with its anchor.
+    fn anchor_script_family(&self, candidates: &[String]) -> Option<(ScriptFamily, String)> {
+        let has = |code: &str| candidates.iter().any(|c| c == code);
+        let pick_first = |prefs: &[&str], family: ScriptFamily| -> Option<String> {
+            for &p in prefs {
+                if has(p) {
+                    return Some(p.to_string());
+                }
+            }
+            candidates.iter().find(|c| language_script_family(c) == family).cloned()
+        };
 
-fn disambiguate_latin_candidates(
-    family_candidates: &[String],
-    tiff_samples: &[Vec<u8>],
-    fallback_anchor: Option<&str>,
-    cancel: &AtomicBool,
-) -> Option<String> {
-    let mut reader_langs: Vec<String> = Vec::new();
-    for group in [
-        &["hrv", "ces", "pol", "slk", "slv", "srp_latn", "bos"][..],
-        &["deu", "fra", "spa", "ita", "por", "swe", "dan"][..],
-        &["eng", "ron", "tur", "hun", "nld"][..],
-    ] {
-        if let Some(&picked) = group.iter().find(|&&g| family_candidates.iter().any(|c| c == g)) {
-            if !reader_langs.iter().any(|r| r == picked) {
-                reader_langs.push(picked.to_string());
+        let mut script_anchors: Vec<(ScriptFamily, String)> = Vec::new();
+        for (family, prefs) in [
+            (ScriptFamily::Latin, &["hrv", "ces", "deu", "fra", "spa", "eng"][..]),
+            (ScriptFamily::Cyrillic, &["rus", "srp", "ukr", "bul"][..]),
+            (ScriptFamily::Japanese, &["jpn"][..]),
+            (ScriptFamily::Chinese, &["chi_sim", "chi_tra"][..]),
+            (ScriptFamily::Korean, &["kor"][..]),
+            (ScriptFamily::Greek, &["ell"][..]),
+            (ScriptFamily::Arabic, &["ara", "fas"][..]),
+            (ScriptFamily::Hebrew, &["heb"][..]),
+            (ScriptFamily::Other, &["hin", "tha"][..]),
+        ] {
+            if let Some(anchor) = pick_first(prefs, family) {
+                script_anchors.push((family, anchor));
             }
         }
-    }
-    if reader_langs.is_empty() {
-        reader_langs.push(family_candidates[0].clone());
-    }
 
-    let mut reader_runs: Vec<(String, OcrSampleRun)> = Vec::new();
-    for r_lang in &reader_langs {
-        if cancel.load(Ordering::Relaxed) {
+        let mut script_results: Vec<(ScriptFamily, String, OcrSampleRun, f32)> = Vec::new();
+        for (family, anchor) in script_anchors {
+            if let Some(run) = self.run(&anchor, self.quick_samples()) {
+                let fit = evaluate_script_fit(family, &run);
+                if fit > 0.0 {
+                    script_results.push((family, anchor, run, fit));
+                }
+            }
+        }
+
+        if script_results.is_empty() || self.cancelled() {
             return None;
         }
-        if let Some(run) = run_ocr_on_tiff_samples(r_lang, tiff_samples, cancel) {
-            reader_runs.push((r_lang.clone(), run));
-        }
-    }
-    if cancel.load(Ordering::Relaxed) {
-        return None;
-    }
-    if reader_runs.is_empty() {
-        return fallback_anchor.map(|s| s.to_string());
-    }
 
-    let text_refs: Vec<&str> = reader_runs.iter().map(|(_, r)| r.text.as_str()).collect();
-    let mut ranked: Vec<(String, f32)> = family_candidates
-        .iter()
-        .map(|cand| {
-            let ling = LATIN_PROFILES.iter().find(|p| p.code == cand).map_or(0.0, |p| score_linguistic_profile(p, &text_refs));
-            let tie_bias = match cand.as_str() {
-                "hrv" | "eng" | "deu" | "fra" | "spa" | "ita" => 0.5,
-                _ => 0.0,
-            };
-            (cand.clone(), ling + tie_bias)
-        })
-        .collect();
-
-    ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
-
-    let mut best_code: Option<String> = None;
-    let mut best_total = f32::NEG_INFINITY;
-
-    for (cand, pre_score) in ranked.into_iter().take(3) {
-        if cancel.load(Ordering::Relaxed) {
-            return None;
-        }
-        let run_opt = reader_runs
+        // If Latin achieved high confidence (>= 70) with clean multi-letter words, suppress CJK/Other hallucinations.
+        let latin_strong = script_results
             .iter()
-            .find(|(l, _)| l == &cand)
-            .map(|(_, r)| r.clone())
-            .or_else(|| run_ocr_on_tiff_samples(&cand, tiff_samples, cancel));
+            .find(|(f, _, _, _)| *f == ScriptFamily::Latin)
+            .is_some_and(|(_, _, run, fit)| run.mean_conf >= 70.0 && *fit >= 45.0);
 
-        if let Some(run) = run_opt {
-            let own_ling = LATIN_PROFILES
+        if latin_strong {
+            script_results.retain(|(f, _, _, _)| {
+                !matches!(f, ScriptFamily::Japanese | ScriptFamily::Chinese | ScriptFamily::Korean | ScriptFamily::Other)
+            });
+        }
+
+        script_results.sort_by(|a, b| b.3.total_cmp(&a.3));
+        let (family, anchor, _, _) = script_results.swap_remove(0);
+        Some((family, anchor))
+    }
+
+    fn disambiguate_latin(&self, family_candidates: &[String], fallback_anchor: &str) -> Option<String> {
+        let mut reader_langs: Vec<String> = Vec::new();
+        for group in [
+            &["hrv", "ces", "pol", "slk", "slv", "srp_latn", "bos"][..],
+            &["deu", "fra", "spa", "ita", "por", "swe", "dan"][..],
+            &["eng", "ron", "tur", "hun", "nld"][..],
+        ] {
+            if let Some(&picked) = group.iter().find(|&&g| family_candidates.iter().any(|c| c == g)) {
+                if !reader_langs.iter().any(|r| r == picked) {
+                    reader_langs.push(picked.to_string());
+                }
+            }
+        }
+        if reader_langs.is_empty() {
+            reader_langs.push(family_candidates[0].clone());
+        }
+
+        let reader_runs: Vec<(String, OcrSampleRun)> =
+            reader_langs.into_iter().filter_map(|lang| self.run(&lang, self.samples).map(|run| (lang, run))).collect();
+        if self.cancelled() {
+            return None;
+        }
+        if reader_runs.is_empty() {
+            return Some(fallback_anchor.to_string());
+        }
+
+        let text_refs: Vec<&str> = reader_runs.iter().map(|(_, r)| r.text.as_str()).collect();
+        let mut ranked: Vec<(String, f32)> = family_candidates
+            .iter()
+            .map(|cand| {
+                let ling =
+                    LATIN_PROFILES.iter().find(|p| p.code == cand).map_or(0.0, |p| score_linguistic_profile(p, &text_refs));
+                let tie_bias = match cand.as_str() {
+                    "hrv" | "eng" | "deu" | "fra" | "spa" | "ita" => 0.5,
+                    _ => 0.0,
+                };
+                (cand.clone(), ling + tie_bias)
+            })
+            .collect();
+
+        ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+        let mut best_code: Option<String> = None;
+        let mut best_total = f32::NEG_INFINITY;
+
+        for (cand, pre_score) in ranked.into_iter().take(3) {
+            let run_opt =
+                reader_runs.iter().find(|(l, _)| l == &cand).map(|(_, r)| r.clone()).or_else(|| self.run(&cand, self.samples));
+
+            if let Some(run) = run_opt {
+                let own_ling = LATIN_PROFILES
+                    .iter()
+                    .find(|p| p.code == cand)
+                    .map_or(pre_score, |p| score_linguistic_profile(p, &[run.text.as_str()]));
+                let combined_ling = own_ling.max(pre_score * 0.6);
+                let total = combined_ling * 2.5 + run.mean_conf;
+                if total > best_total {
+                    best_total = total;
+                    best_code = Some(cand);
+                }
+            }
+        }
+
+        best_code.filter(|_| !self.cancelled())
+    }
+
+    fn disambiguate_cyrillic(&self, family_candidates: &[String]) -> Option<String> {
+        let mut reader_runs: Vec<(String, OcrSampleRun)> = Vec::new();
+        for group in [&["rus", "ukr"][..], &["srp", "bul"][..]] {
+            if let Some(&picked) = group.iter().find(|&&g| family_candidates.iter().any(|c| c == g)) {
+                if let Some(run) = self.run(picked, self.samples) {
+                    reader_runs.push((picked.to_string(), run));
+                }
+            }
+        }
+        if self.cancelled() {
+            return None;
+        }
+        if reader_runs.is_empty() {
+            if let Some(run) = self.run(&family_candidates[0], self.samples) {
+                reader_runs.push((family_candidates[0].clone(), run));
+            }
+        }
+        let text_refs: Vec<&str> = reader_runs.iter().map(|(_, r)| r.text.as_str()).collect();
+
+        let mut best_code = None;
+        let mut best_total = f32::NEG_INFINITY;
+        for cand in family_candidates {
+            let ling = CYRILLIC_PROFILES.iter().find(|p| p.code == cand).map_or(0.0, |p| score_linguistic_profile(p, &text_refs));
+            let conf = reader_runs
                 .iter()
-                .find(|p| p.code == cand)
-                .map_or(pre_score, |p| score_linguistic_profile(p, &[run.text.as_str()]));
-            let combined_ling = own_ling.max(pre_score * 0.6);
-            let total = combined_ling * 2.5 + run.mean_conf;
+                .find(|(l, _)| l == cand)
+                .map(|(_, r)| r.mean_conf)
+                .or_else(|| self.run(cand, self.quick_samples()).map(|r| r.mean_conf))
+                .unwrap_or(0.0);
+            let total = ling * 2.5 + conf;
             if total > best_total {
                 best_total = total;
-                best_code = Some(cand);
-            }
-        }
-    }
-
-    (!cancel.load(Ordering::Relaxed)).then_some(best_code).flatten()
-}
-
-fn disambiguate_cyrillic_candidates(
-    family_candidates: &[String],
-    tiff_samples: &[Vec<u8>],
-    quick_samples: &[Vec<u8>],
-    cancel: &AtomicBool,
-) -> Option<String> {
-    let mut reader_runs: Vec<(String, OcrSampleRun)> = Vec::new();
-    for group in [&["rus", "ukr"][..], &["srp", "bul"][..]] {
-        if cancel.load(Ordering::Relaxed) {
-            return None;
-        }
-        if let Some(&picked) = group.iter().find(|&&g| family_candidates.iter().any(|c| c == g)) {
-            if let Some(run) = run_ocr_on_tiff_samples(picked, tiff_samples, cancel) {
-                reader_runs.push((picked.to_string(), run));
-            }
-        }
-    }
-    if cancel.load(Ordering::Relaxed) {
-        return None;
-    }
-    if reader_runs.is_empty() {
-        if let Some(run) = run_ocr_on_tiff_samples(&family_candidates[0], tiff_samples, cancel) {
-            reader_runs.push((family_candidates[0].clone(), run));
-        }
-    }
-    let text_refs: Vec<&str> = reader_runs.iter().map(|(_, r)| r.text.as_str()).collect();
-
-    let mut best_code = None;
-    let mut best_total = f32::NEG_INFINITY;
-    for cand in family_candidates {
-        if cancel.load(Ordering::Relaxed) {
-            return None;
-        }
-        let ling = CYRILLIC_PROFILES.iter().find(|p| p.code == cand).map_or(0.0, |p| score_linguistic_profile(p, &text_refs));
-        let conf = reader_runs
-            .iter()
-            .find(|(l, _)| l == cand)
-            .map(|(_, r)| r.mean_conf)
-            .or_else(|| run_ocr_on_tiff_samples(cand, quick_samples, cancel).map(|r| r.mean_conf))
-            .unwrap_or(0.0);
-        let total = ling * 2.5 + conf;
-        if total > best_total {
-            best_total = total;
-            best_code = Some(cand.clone());
-        }
-    }
-    (!cancel.load(Ordering::Relaxed)).then_some(best_code).flatten()
-}
-
-fn disambiguate_by_confidence(family_candidates: &[String], quick_samples: &[Vec<u8>], cancel: &AtomicBool) -> Option<String> {
-    let mut best_code = None;
-    let mut best_conf = -1.0_f32;
-    for cand in family_candidates.iter().take(4) {
-        if cancel.load(Ordering::Relaxed) {
-            return None;
-        }
-        if let Some(run) = run_ocr_on_tiff_samples(cand, quick_samples, cancel) {
-            if run.mean_conf > best_conf {
-                best_conf = run.mean_conf;
                 best_code = Some(cand.clone());
             }
         }
+        best_code.filter(|_| !self.cancelled())
     }
-    (!cancel.load(Ordering::Relaxed)).then_some(best_code).flatten()
+
+    fn disambiguate_by_confidence(&self, family_candidates: &[String]) -> Option<String> {
+        let mut best_code = None;
+        let mut best_conf = -1.0_f32;
+        for cand in family_candidates.iter().take(4) {
+            if let Some(run) = self.run(cand, self.quick_samples()) {
+                if run.mean_conf > best_conf {
+                    best_conf = run.mean_conf;
+                    best_code = Some(cand.clone());
+                }
+            }
+        }
+        best_code.filter(|_| !self.cancelled())
+    }
 }
 
 #[cfg(test)]
@@ -1442,6 +1404,31 @@ mod tests {
         for other in LATIN_PROFILES.iter().filter(|p| p.code != "deu") {
             let s = score_linguistic_profile(other, &german_dialogue);
             assert!(deu_score > s + 30.0, "Expected German ('deu': {deu_score}) to decisively beat '{}': {s}", other.code);
+        }
+    }
+
+    #[test]
+    fn missing_language_needs_clearly_better_letters_and_words() {
+        let installed = ["eng".to_string()];
+        let croatian_read_by_english = "Puno vam hvala. Dr. Meinheimer,\ndrago mi je Sto ste dosii.\nVeselim se vaSem govoru.\n\
+            Siguran sam da se radi o\nCudesnom, dobro promisljenom djelu.\nAh, evo je. Draga.\n\
+            Jeste li sluZbeno upoznalli\ndr. Meinheimera?\nPrva dama je pala!\n-Sto se desilo?";
+        assert_eq!(best_missing_profile(LATIN_PROFILES, "eng", &installed, croatian_read_by_english), Some("hrv"));
+
+        let english =
+            "Thank you very much. Dr. Meinheimer,\nit is so good of you to come.\nI am looking forward to your speech.\n\
+            I'm sure it will be a wonderful, well thought out work.\nAh, here she is. Darling.\n\
+            Have you formally met Dr. Meinheimer?\nThe first lady is down!\n-What happened?";
+        assert_eq!(best_missing_profile(LATIN_PROFILES, "eng", &installed, english), None);
+
+        let everything: Vec<String> = LATIN_PROFILES.iter().map(|profile| profile.code.to_string()).collect();
+        assert_eq!(best_missing_profile(LATIN_PROFILES, "eng", &everything, croatian_read_by_english), None);
+    }
+
+    #[test]
+    fn every_profiled_language_is_downloadable() {
+        for profile in LATIN_PROFILES.iter().chain(CYRILLIC_PROFILES) {
+            assert!(pgs_ocr::tesseract::models::is_known(profile.code), "{}", profile.code);
         }
     }
 }

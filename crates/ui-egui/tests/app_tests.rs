@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use eframe::App as _;
 use egui::{pos2, vec2, Frame, Rect};
-use pgs_core::language::ModelInfo;
+use pgs_core::ocr::ModelInfo;
 use pgs_core::{I18nService, UiLanguage};
 use ui_egui::app::*;
 use ui_egui::i18n::{format_language_label, tr};

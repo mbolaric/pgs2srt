@@ -1,13 +1,15 @@
 mod args;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 
 use args::Args;
 use pgs_core::files::{validate_language, validate_output};
-use pgs_core::language::{detect_language_from_path, installed_languages, probe_language_from_file};
+use pgs_core::language::{detect_language_from_path, probe_language_from_file};
+use pgs_core::ocr::installed_languages;
 use pgs_core::{output_path, validate_output_name, Error, LanguageService, PgsToSrt, ProgressReporter, Result};
 
 struct IndicatifReporter<'a>(&'a ProgressBar);
@@ -31,11 +33,20 @@ fn resolve_language(input: &Path, requested: &str) -> Result<String> {
     if !requested.eq_ignore_ascii_case("auto") {
         return Ok(requested.to_string());
     }
-    if let Some(code) = detect_language_from_path(input) {
-        return Ok(code.to_string());
+    let installed = installed_languages()?;
+    let code = match detect_language_from_path(input) {
+        Some(code) => code.to_string(),
+        None => probe_language_from_file(input, &installed, &AtomicBool::new(false))
+            .ok_or_else(|| Error::InvalidInput(LanguageService::get("toast.detect_none").into()))?,
+    };
+    if !installed.contains(&code) {
+        return Err(Error::InvalidInput(format!(
+            "{} {code} ({})",
+            LanguageService::get("toast.detected_lang"),
+            LanguageService::get("badge.missing_model")
+        )));
     }
-    probe_language_from_file(input, &installed_languages()?)
-        .ok_or_else(|| Error::InvalidInput(LanguageService::get("toast.detect_none").into()))
+    Ok(code)
 }
 
 fn prepare(args: &Args) -> Result<(String, PathBuf)> {
