@@ -29,6 +29,10 @@ jobs:
       - name: Check version
         id: version
         run: |
+          if ! cargo metadata --locked --format-version 1 >/dev/null; then
+            echo "::error::Cargo.lock is out of date (a version bump also changes it): run 'cargo update --workspace' and commit Cargo.lock"
+            exit 1
+          fi
           version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "pgs2srt-desktop") | .version')
           if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$version" ]]; then
             echo "::error::Tag $GITHUB_REF_NAME does not match version $version in Cargo.toml"
