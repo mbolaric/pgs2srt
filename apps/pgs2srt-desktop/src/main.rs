@@ -41,6 +41,11 @@ fn event_loop_hook() -> Option<eframe::EventLoopBuilderHook> {
     None
 }
 
+// Without an icon eframe shows the egui logo, on macOS even in place of the bundle icon.
+fn app_icon() -> egui::IconData {
+    eframe::icon_data::from_png_bytes(include_bytes!("../../../packaging/icons/pgs2srt.png")).unwrap_or_default()
+}
+
 fn run(renderer: Renderer) -> eframe::Result<()> {
     let options = NativeOptions {
         renderer,
@@ -49,6 +54,7 @@ fn run(renderer: Renderer) -> eframe::Result<()> {
             .with_inner_size(Vec2::new(1180.0, 740.0))
             .with_min_inner_size(Vec2::new(920.0, 580.0))
             .with_title("pgs2srt — Blu-ray SUP to SRT Workbench")
+            .with_icon(app_icon())
             .with_decorations(false)
             .with_drag_and_drop(true),
         ..Default::default()
@@ -81,4 +87,13 @@ fn main() -> eframe::Result<()> {
         log::error!("Cannot start the desktop app: {error}");
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn app_icon_decodes() {
+        let icon = super::app_icon();
+        assert_eq!((icon.width, icon.height), (512, 512));
+    }
 }

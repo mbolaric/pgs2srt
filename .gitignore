@@ -17,3 +17,5 @@ target/
 #.idea/
 
 examples/data/
+.idea/
+plan/

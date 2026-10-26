@@ -1,0 +1,249 @@
+name: Release
+
+# A pushed `v*` tag builds every package and creates a draft GitHub Release. A manual run only builds the
+# packages and keeps them as workflow artifacts, to test packaging before tagging.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    env:
+      CARGO_ABOUT_VERSION: "0.9.2"
+      CARGO_ABOUT_SHA256: 9099a59e820c38a68b9d65f300662a567d56562f9a10f6aa4c7e86c17c2566af
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check version
+        id: version
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "pgs2srt-desktop") | .version')
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match version $version in Cargo.toml"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch OCR models
+        run: packaging/fetch-tessdata.sh common eng
+
+      - name: Collect Rust crate licenses
+        run: |
+          archive="cargo-about-$CARGO_ABOUT_VERSION-x86_64-unknown-linux-musl.tar.gz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$archive" "https://github.com/EmbarkStudios/cargo-about/releases/download/$CARGO_ABOUT_VERSION/$archive"
+          echo "$CARGO_ABOUT_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" --strip-components=1
+          "$RUNNER_TEMP/cargo-about" generate --locked about.hbs -o common/THIRD-PARTY-LICENSES.html
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: common
+          path: common/
+          if-no-files-found: error
+
+  linux:
+    name: Linux AppImage
+    needs: prepare
+    runs-on: ubuntu-24.04
+    # The oldest supported glibc: the AppImage runs on Ubuntu 22.04, Debian 12 and newer.
+    container: ubuntu:22.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends software-properties-common gnupg ca-certificates curl git file \
+            lsb-release build-essential pkg-config clang
+          # Ubuntu 22.04 ships Tesseract 4.1, which lacks TessBaseAPIInit5.
+          add-apt-repository -y ppa:alex-p/tesseract-ocr5
+          apt-get install -y --no-install-recommends libtesseract-dev libleptonica-dev
+          curl -fsSL --retry 3 https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: common
+          path: common
+
+      - name: Build
+        run: cargo build --release --locked -p pgs2srt-desktop -p pgs2srt
+
+      - name: Package
+        run: packaging/linux/build-appimage.sh "${{ needs.prepare.outputs.version }}" common dist
+
+      - name: Check the packages without system Tesseract
+        run: |
+          dpkg -r --force-depends $(dpkg-query -W -f='${Package}\n' | grep -E '^(libtesseract|liblept)')
+          cd "$RUNNER_TEMP"
+          tar -xzf "$GITHUB_WORKSPACE"/dist/pgs2srt-cli-*.tar.gz
+          "$GITHUB_WORKSPACE"/dist/pgs2srt-*.AppImage --appimage-extract >/dev/null
+          for binary in pgs2srt-cli-*/bin/pgs2srt squashfs-root/usr/bin/pgs2srt-desktop squashfs-root/usr/bin/pgs2srt; do
+            if ldd "$binary" | grep "not found"; then
+              echo "::error::$binary has unresolved libraries"
+              exit 1
+            fi
+          done
+          pgs2srt-cli-*/bin/pgs2srt --version
+          ls squashfs-root/usr/share/doc
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package-linux
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    name: macOS DMG
+    needs: prepare
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      # Homebrew bottles target the runner's macOS, so the app needs that version or newer anyway.
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: common
+          path: common
+
+      - name: Install build dependencies
+        run: |
+          brew install tesseract dylibbundler pkgconf
+          rustup update --no-self-update stable
+          rustup default stable
+
+      - name: Build
+        run: cargo build --release --locked -p pgs2srt-desktop -p pgs2srt
+
+      - name: Package
+        run: packaging/macos/build-dmg.sh "${{ needs.prepare.outputs.version }}" common dist
+
+      - name: Check the app without Homebrew Tesseract
+        run: |
+          brew uninstall --ignore-dependencies tesseract leptonica
+          app=target/dmg/pgs2srt.app/Contents
+          if otool -L "$app"/MacOS/* "$app"/Frameworks/* | grep -E '/opt/homebrew|/usr/local/(opt|Cellar)'; then
+            echo "::error::The app still links Homebrew libraries"
+            exit 1
+          fi
+          "$app/MacOS/pgs2srt" --version
+          ls "$app/Resources/licenses"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package-macos
+          path: dist/*
+          if-no-files-found: error
+
+  windows:
+    name: Windows installer
+    needs: prepare
+    runs-on: windows-2025
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      VCPKG_REF: "2026.07.29"
+      VCPKG_ROOT: C:\pgs2srt-vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: C:\pgs2srt-vcpkg-cache
+      # Static libraries and C runtime: the executables need no DLLs beyond what Windows ships.
+      VCPKGRS_TRIPLET: x64-windows-static-release
+      RUSTFLAGS: >-
+        -C target-feature=+crt-static
+        -l dylib=iphlpapi -l dylib=secur32 -l dylib=crypt32 -l dylib=normaliz -l dylib=wldap32 -l dylib=bcrypt
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: common
+          path: common
+
+      - name: Set up vcpkg
+        run: |
+          git clone --quiet --depth 1 --branch $env:VCPKG_REF https://github.com/microsoft/vcpkg $env:VCPKG_ROOT
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+
+      - uses: actions/cache/restore@v6
+        id: vcpkg-cache
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-${{ env.VCPKG_REF }}-${{ env.VCPKGRS_TRIPLET }}-tesseract
+
+      - name: Build Tesseract
+        run: |
+          & "$env:VCPKG_ROOT\vcpkg.exe" install "tesseract:$env:VCPKGRS_TRIPLET"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      # Saved right away so a later failure does not throw away the long Tesseract build.
+      - uses: actions/cache/save@v6
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-${{ env.VCPKG_REF }}-${{ env.VCPKGRS_TRIPLET }}-tesseract
+
+      - name: Build
+        run: |
+          rustup update --no-self-update stable
+          rustup default stable
+          cargo build --release --locked -p pgs2srt-desktop -p pgs2srt
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Package
+        run: ./packaging/windows/build-installer.ps1 -Version "${{ needs.prepare.outputs.version }}" -Common common -Out dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package-windows
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Draft release
+    needs: [prepare, linux, macos, windows]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: package-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag --generate-notes \
+            --title "pgs2srt $VERSION" *

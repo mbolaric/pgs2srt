@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=pgs2srt
+GenericName=Subtitle Converter
+Comment=Convert Blu-ray SUP subtitles to SRT with OCR
+Exec=pgs2srt-desktop
+Icon=pgs2srt
+Terminal=false
+Categories=AudioVideo;Video;
+Keywords=subtitle;sup;pgs;srt;ocr;
+StartupWMClass=pgs2srt-desktop

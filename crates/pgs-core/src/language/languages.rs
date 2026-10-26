@@ -108,10 +108,16 @@ pub fn data_path() -> Result<Option<String>> {
     if std::env::var_os("TESSDATA_PREFIX").is_some() {
         return Ok(None);
     }
-    let path = std::env::current_exe()?.with_file_name("tessdata");
-    if !path.is_dir() {
+    let exe = std::env::current_exe()?;
+    // An app bundle keeps data in Contents/Resources; resolve symlinks so a linked CLI finds it too.
+    #[cfg(target_os = "macos")]
+    let in_bundle =
+        exe.canonicalize()?.parent().and_then(std::path::Path::parent).map(|contents| contents.join("Resources/tessdata"));
+    #[cfg(not(target_os = "macos"))]
+    let in_bundle = None;
+    let Some(path) = std::iter::once(exe.with_file_name("tessdata")).chain(in_bundle).find(|path| path.is_dir()) else {
         return Ok(None);
-    }
+    };
     path.into_os_string()
         .into_string()
         .map(Some)
