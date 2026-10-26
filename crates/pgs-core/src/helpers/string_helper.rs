@@ -10,12 +10,7 @@ pub fn presentation_ts_into_string(presentation_timestamp: u32) -> String {
     let milliseconds = temp % 1000;
 
     let mut result = String::new();
-    write!(
-        &mut result,
-        "{:02}:{:02}:{:02},{:03}",
-        hours, minutes, seconds, milliseconds
-    )
-    .unwrap();
+    write!(&mut result, "{:02}:{:02}:{:02},{:03}", hours, minutes, seconds, milliseconds).unwrap();
 
     result
 }

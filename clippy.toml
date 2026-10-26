@@ -1,0 +1,6 @@
+# Enforce the PdfCraft widget and design system approach:
+# Never call raw egui checkbox or radio methods directly; route them through the centralized widgets module.
+disallowed-methods = [
+    { path = "egui::Ui::checkbox", reason = "Use widgets::checkbox for consistent styling and theme parity" },
+    { path = "egui::Ui::radio", reason = "Use widgets::radio or widgets::radio_value for consistent styling and theme parity" },
+]

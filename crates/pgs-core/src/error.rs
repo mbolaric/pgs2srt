@@ -6,16 +6,22 @@ pub enum Error {
     Pgs(pgs::Error),
     File(std::io::Error),
     ProcessDisplaySet(String),
+    InvalidInput(String),
+    Tesseract(String),
+    Cancelled,
 }
 
 impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use Error::*;
         match self {
             Encoding(e) => write!(f, "Tiff Encoding Error ({e})"),
             Pgs(e) => write!(f, "Parsing Error ({e})"),
             File(e) => write!(f, "File Read/Write Error ({e})"),
             ProcessDisplaySet(e) => write!(f, "Cannot process Display Sets ({e})"),
+            InvalidInput(e) => write!(f, "Invalid input: {e}"),
+            Tesseract(e) => write!(f, "Tesseract Error: {e}"),
+            Cancelled => write!(f, "Conversion was cancelled"),
         }
     }
 }

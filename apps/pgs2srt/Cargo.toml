@@ -12,7 +12,6 @@ pgs-core = { workspace = true }
 clap = { workspace = true }
 indicatif = { workspace = true }
 log = { workspace = true }
-log4rs = { workspace = true }
 
 [[bin]]
 name = "pgs2srt"

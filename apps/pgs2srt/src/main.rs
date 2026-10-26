@@ -1,16 +1,14 @@
 mod args;
 
+use std::path::{Path, PathBuf};
+
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
-use log::LevelFilter;
-use log4rs::{
-    append::console::ConsoleAppender,
-    config::{Appender, Root},
-    Config,
-};
 
 use args::Args;
-use pgs_core::{PgsToSrt, ProgressReporter};
+use pgs_core::files::{validate_language, validate_output};
+use pgs_core::language::{detect_language_from_path, installed_languages, probe_language_from_file};
+use pgs_core::{output_path, validate_output_name, Error, LanguageService, PgsToSrt, ProgressReporter, Result};
 
 struct IndicatifReporter<'a>(&'a ProgressBar);
 
@@ -28,17 +26,43 @@ impl<'a> ProgressReporter for IndicatifReporter<'a> {
     }
 }
 
-pub fn init_logging() {
-    let stdout = ConsoleAppender::builder().build();
-    let config = Config::builder()
-        .appender(Appender::builder().build("stdout", Box::new(stdout)))
-        .build(Root::builder().appender("stdout").build(LevelFilter::Debug))
-        .unwrap();
-    let _ = log4rs::init_config(config).unwrap();
+/// Resolves `auto` from the file name tag, falling back to an OCR probe over installed models.
+fn resolve_language(input: &Path, requested: &str) -> Result<String> {
+    if !requested.eq_ignore_ascii_case("auto") {
+        return Ok(requested.to_string());
+    }
+    if let Some(code) = detect_language_from_path(input) {
+        return Ok(code.to_string());
+    }
+    probe_language_from_file(input, &installed_languages()?)
+        .ok_or_else(|| Error::InvalidInput(LanguageService::get("toast.detect_none").into()))
+}
+
+fn prepare(args: &Args) -> Result<(String, PathBuf)> {
+    let input = Path::new(args.pgs_file_name.trim());
+    if !input.is_file() {
+        return Err(Error::File(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{} not found", input.display()))));
+    }
+    let language = resolve_language(input, &args.language)?;
+    validate_language(&language)?;
+
+    let output = if args.srt_file_name.is_empty() { output_path(input, &language) } else { PathBuf::from(&args.srt_file_name) };
+    let output = if args.force {
+        validate_output_name(&output)?;
+        output
+    } else {
+        validate_output(&output).map_err(|error| match error {
+            Error::InvalidInput(message) if output.symlink_metadata().is_ok() => {
+                Error::InvalidInput(format!("{message} (use --force to overwrite)"))
+            }
+            other => other,
+        })?
+    };
+    Ok((language, output))
 }
 
 fn main() {
-    init_logging();
+    pgs_core::logging::init("pgs2srt", false);
 
     let args = Args::parse();
 
@@ -48,28 +72,29 @@ fn main() {
     let pb = ProgressBar::new(0);
 
     pb.set_style(
-        ProgressStyle::with_template(
-            "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({eta})",
-        )
-        .unwrap()
-        .progress_chars("#>-"),
+        ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({eta})")
+            .unwrap()
+            .progress_chars("#>-"),
     );
 
     let reporter = IndicatifReporter(&pb);
     reporter.println("[+] Start Processing");
 
-    let pgs_to_srt = PgsToSrt::new(&reporter);
-    match pgs_to_srt.run(
-        args.pgs_file_name.trim(),
-        &args.language,
-        &args.srt_file_name,
-    ) {
+    let result = prepare(&args).and_then(|(language, output)| {
+        reporter.println(&format!("[+] Language: {language}"));
+        reporter.println(&format!("[+] Output: {}", output.display()));
+        PgsToSrt::new(&reporter).run(args.pgs_file_name.trim(), &language, &output.to_string_lossy())
+    });
+    match result {
         Ok(_) => {
             reporter.println("[+] Processing Done");
         }
         Err(err) => {
-            reporter.println(&format!("[-] {:}", err));
-            reporter.println("[+] Processing Done");
+            log::error!("Converting {} failed: {err}", args.pgs_file_name.trim());
+            // Not `reporter.println`: the progress bar is hidden in debug builds and would swallow it.
+            pb.abandon();
+            eprintln!("[-] {err}");
+            std::process::exit(1);
         }
     }
 }

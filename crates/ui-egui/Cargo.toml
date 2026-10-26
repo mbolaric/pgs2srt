@@ -1,0 +1,18 @@
+[package]
+name = "ui-egui"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared egui interface for pgs2srt desktop and web"
+
+[dependencies]
+pgs-core = { workspace = true }
+egui = { workspace = true }
+eframe = { workspace = true, features = ["glow", "default_fonts"] }
+rfd = { workspace = true }
+crossbeam-channel = { workspace = true }
+log = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { workspace = true, features = ["wayland", "x11"] }

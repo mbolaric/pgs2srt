@@ -12,3 +12,6 @@ tiff = { workspace = true }
 tesseract = { workspace = true }
 tesseract-plumbing = { workspace = true }
 log = { workspace = true }
+log4rs = { workspace = true }
+sha1 = { workspace = true }
+ureq = { workspace = true }

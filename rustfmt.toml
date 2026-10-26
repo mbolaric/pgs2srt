@@ -1,0 +1,8 @@
+style_edition = "2018"
+imports_granularity = "Module"
+group_imports = "StdExternalCrate"
+format_code_in_doc_comments = true
+newline_style = "Unix"
+use_field_init_shorthand = true
+use_small_heuristics = "Max"
+max_width = 130

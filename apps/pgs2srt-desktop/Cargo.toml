@@ -1,0 +1,23 @@
+[package]
+name = "pgs2srt-desktop"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Desktop GUI for pgs2srt"
+
+[dependencies]
+pgs-core = { workspace = true }
+ui-egui = { workspace = true }
+# wgpu is the primary renderer, glow (OpenGL) is the runtime fallback.
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "glow"] }
+egui = { workspace = true }
+log = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { workspace = true, features = ["wayland", "x11"] }
+winit = { workspace = true, features = ["x11"] }
+
+[[bin]]
+name = "pgs2srt-desktop"
+path = "src/main.rs"
