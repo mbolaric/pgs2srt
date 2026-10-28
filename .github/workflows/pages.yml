@@ -47,6 +47,9 @@ jobs:
       - name: Fetch tesseract.js
         run: packaging/web/fetch-tesseract-js.sh apps/pgs2srt-web/vendor
 
+      - name: Collect font licenses
+        run: packaging/collect-font-licenses.sh apps/pgs2srt-web/vendor/licenses
+
       - name: Collect Rust crate licenses
         run: |
           cargo-about generate --locked -m apps/pgs2srt-web/Cargo.toml --target wasm32-unknown-unknown about.hbs \

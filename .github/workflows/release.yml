@@ -44,9 +44,7 @@ jobs:
         run: packaging/fetch-tessdata.sh common eng
 
       - name: Collect font licenses
-        run: |
-          mkdir -p common/licenses/inter
-          cp crates/ui-egui/assets/fonts/OFL.txt common/licenses/inter/
+        run: packaging/collect-font-licenses.sh common/licenses
 
       - name: Collect Rust crate licenses
         run: |
@@ -265,6 +263,9 @@ jobs:
       - name: Fetch tesseract.js
         run: packaging/web/fetch-tesseract-js.sh apps/pgs2srt-web/vendor
 
+      - name: Collect font licenses
+        run: packaging/collect-font-licenses.sh apps/pgs2srt-web/vendor/licenses
+
       - name: Collect Rust crate licenses
         run: |
           cargo-about generate --locked -m apps/pgs2srt-web/Cargo.toml --target wasm32-unknown-unknown about.hbs \
@@ -282,6 +283,12 @@ jobs:
             echo "::error::index.html has root-relative URLs, so the app only works at the web server root"
             exit 1
           fi
+          for font in crates/ui-egui/assets/fonts/*/; do
+            if [[ ! -f "apps/pgs2srt-web/dist/licenses/$(basename "$font")/OFL.txt" ]]; then
+              echo "::error::The web build lacks the license of the bundled font $(basename "$font")"
+              exit 1
+            fi
+          done
           mkdir -p "$RUNNER_TEMP/web" dist
           cp -r apps/pgs2srt-web/dist "$RUNNER_TEMP/web/pgs2srt"
           (cd "$RUNNER_TEMP/web" && zip -qr "$GITHUB_WORKSPACE/dist/pgs2srt-$VERSION-web.zip" pgs2srt)

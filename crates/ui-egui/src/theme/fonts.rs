@@ -1,64 +1,52 @@
-use std::path::Path;
 use std::sync::Arc;
 
 use egui::{FontData, FontDefinitions, FontFamily, FontId};
+
+/// Names of the families for the bundled weights besides Regular, which is `FontFamily::Proportional`.
+const MEDIUM: &str = "medium";
+const SEMIBOLD: &str = "semibold";
 
 pub fn regular(size: f32) -> FontId {
     FontId::proportional(size)
 }
 
 pub fn medium(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name("medium".into()))
+    FontId::new(size, FontFamily::Name(MEDIUM.into()))
 }
 
 pub fn semibold(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name("semibold".into()))
+    FontId::new(size, FontFamily::Name(SEMIBOLD.into()))
 }
 
 pub fn mono(size: f32) -> FontId {
     FontId::monospace(size)
 }
 
-fn read_font_file(candidates: &[&str]) -> Option<FontData> {
-    for path in candidates {
-        if let Ok(bytes) = std::fs::read(Path::new(path)) {
-            return Some(FontData::from_owned(bytes));
-        }
-    }
-    None
+/// The bundled fonts.
+fn bundled_fonts() -> [(FontFamily, &'static str, &'static [u8]); 4] {
+    [
+        (FontFamily::Proportional, "Inter-Regular", include_bytes!("../../assets/fonts/inter/Inter-Regular.ttf")),
+        (FontFamily::Name(MEDIUM.into()), "Inter-Medium", include_bytes!("../../assets/fonts/inter/Inter-Medium.ttf")),
+        (FontFamily::Name(SEMIBOLD.into()), "Inter-SemiBold", include_bytes!("../../assets/fonts/inter/Inter-SemiBold.ttf")),
+        (
+            FontFamily::Monospace,
+            "JetBrainsMonoNL-Regular",
+            include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMonoNL-Regular.ttf"),
+        ),
+    ]
 }
 
-const UI_FONTS: [(&str, &str, &[u8]); 3] = [
-    ("regular", "Inter-Regular", include_bytes!("../../assets/fonts/Inter-Regular.ttf")),
-    ("medium", "Inter-Medium", include_bytes!("../../assets/fonts/Inter-Medium.ttf")),
-    ("semibold", "Inter-SemiBold", include_bytes!("../../assets/fonts/Inter-SemiBold.ttf")),
-];
-
-/// Builds font definitions with crisp Regular, Medium and SemiBold weights from the bundled Inter,
-/// and Monospace from an installed system font (egui's built-in fonts remain the fallback).
+/// Builds font definitions from the bundled fonts, with egui's built-in fonts of the same kind behind each.
 pub fn font_definitions() -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
 
-    let fallback = fonts.families[&FontFamily::Proportional].clone();
-    for (weight, name, bytes) in UI_FONTS {
+    let defaults = fonts.families.clone();
+    for (family, name, bytes) in bundled_fonts() {
         fonts.font_data.insert(name.to_owned(), Arc::new(FontData::from_static(bytes)));
-        let family = if weight == "regular" { FontFamily::Proportional } else { FontFamily::Name(weight.into()) };
+        let kind = if family == FontFamily::Monospace { FontFamily::Monospace } else { FontFamily::Proportional };
         let mut stack = vec![name.to_owned()];
-        stack.extend(fallback.iter().cloned());
+        stack.extend(defaults[&kind].iter().cloned());
         fonts.families.insert(family, stack);
-    }
-
-    if let Some(mono_font) = read_font_file(&[
-        "/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf",
-        "/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMono-Regular.ttf",
-        "C:\\Windows\\Fonts\\cascadiamono.ttf",
-        "C:\\Windows\\Fonts\\consola.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
-        "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-    ]) {
-        fonts.font_data.insert("SystemMono".to_owned(), Arc::new(mono_font));
-        fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "SystemMono".to_owned());
     }
 
     fonts
@@ -66,4 +54,24 @@ pub fn font_definitions() -> FontDefinitions {
 
 pub fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(font_definitions());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_font_helper_starts_with_its_bundled_face() {
+        let fonts = font_definitions();
+        for (id, face) in [
+            (regular(13.0), "Inter-Regular"),
+            (medium(13.0), "Inter-Medium"),
+            (semibold(13.0), "Inter-SemiBold"),
+            (mono(11.0), "JetBrainsMonoNL-Regular"),
+        ] {
+            let stack = fonts.families.get(&id.family).unwrap_or_else(|| panic!("{:?} is not registered", id.family));
+            assert_eq!(stack.first().map(String::as_str), Some(face), "{:?}", id.family);
+            assert!(fonts.font_data.contains_key(face));
+        }
+    }
 }
