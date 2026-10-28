@@ -11,7 +11,8 @@ mkdir -p "$3"
 out=$(cd "$3" && pwd)
 root=$(cd "$(dirname "$0")/../.." && pwd)
 work="$root/target/dmg"
-app="$work/pgs2srt.app"
+dmg_dir="$work/dmg"
+app="$dmg_dir/pgs2srt.app"
 contents="$app/Contents"
 
 rm -rf "$work"
@@ -50,15 +51,17 @@ for dylib in "$contents"/Frameworks/*.dylib; do
     fi
 done
 
-codesign --force --deep --sign - "$app"
-codesign --verify --deep --strict "$app"
+# Ad-hoc signing seals the bundle resources, so Gatekeeper offers Open Anyway instead of reporting the app as
+# damaged. Signed inside-out (Apple advises against --deep for signing); signing the bundle signs its main
+# executable. The app is signed where hdiutil picks it up, so nothing touches it after signing.
+codesign --force --sign - "$contents"/Frameworks/*.dylib "$contents/MacOS/pgs2srt"
+codesign --force --sign - "$app"
+codesign --verify --deep --strict --verbose=2 "$app"
 
-mkdir -p "$work/dmg"
-cp -R "$app" "$work/dmg/"
-ln -s /Applications "$work/dmg/Applications"
+ln -s /Applications "$dmg_dir/Applications"
 # hdiutil sometimes fails with "Resource busy" on CI runners.
 for attempt in 1 2 3; do
-    hdiutil create -volname pgs2srt -srcfolder "$work/dmg" -ov -format UDZO "$out/pgs2srt-$version-macos-arm64.dmg" && break
+    hdiutil create -volname pgs2srt -srcfolder "$dmg_dir" -ov -format UDZO "$out/pgs2srt-$version-macos-arm64.dmg" && break
     [[ $attempt == 3 ]] && exit 1
     sleep 5
 done

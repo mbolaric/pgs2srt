@@ -146,13 +146,14 @@ jobs:
       - name: Check the app without Homebrew Tesseract
         run: |
           brew uninstall --ignore-dependencies tesseract leptonica
-          app=target/dmg/pgs2srt.app/Contents
+          app=target/dmg/dmg/pgs2srt.app/Contents
           if otool -L "$app"/MacOS/* "$app"/Frameworks/* | grep -E '/opt/homebrew|/usr/local/(opt|Cellar)'; then
             echo "::error::The app still links Homebrew libraries"
             exit 1
           fi
           "$app/MacOS/pgs2srt" --version
           ls "$app/Resources/licenses"
+          codesign --verify --deep --strict --verbose=2 target/dmg/dmg/pgs2srt.app
 
       - uses: actions/upload-artifact@v7
         with:
