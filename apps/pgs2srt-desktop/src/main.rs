@@ -18,17 +18,27 @@ fn preferred_renderer() -> Renderer {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn is_set(name: &str) -> bool {
+    std::env::var_os(name).is_some_and(|value| !value.is_empty())
+}
+
+/// On a Wayland session: whether the app runs through XWayland rather than as a native Wayland client.
+#[cfg(target_os = "linux")]
+fn uses_xwayland() -> bool {
+    let wants_wayland = std::env::var("PGS2SRT_BACKEND").is_ok_and(|value| value.eq_ignore_ascii_case("wayland"));
+    !wants_wayland && is_set("DISPLAY")
+}
+
 // winit has no file drag and drop on Wayland, so prefer X11 (XWayland) when it is available.
 #[cfg(target_os = "linux")]
 fn event_loop_hook() -> Option<eframe::EventLoopBuilderHook> {
     use winit::platform::x11::EventLoopBuilderExtX11;
 
-    let is_set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
     if !is_set("WAYLAND_DISPLAY") {
         return None;
     }
-    let wants_wayland = std::env::var("PGS2SRT_BACKEND").is_ok_and(|value| value.eq_ignore_ascii_case("wayland"));
-    if wants_wayland || !is_set("DISPLAY") {
+    if !uses_xwayland() {
         log::warn!("Running as a native Wayland client; drag and drop of files is unavailable");
         return None;
     }
@@ -44,12 +54,25 @@ fn event_loop_hook() -> Option<eframe::EventLoopBuilderHook> {
     None
 }
 
+/// An X11 window keeps the window manager's frame: without it, GNOME shows the content stretched while the
+/// window is being resized. Native Wayland windows and the other systems use the app's own title bar.
+#[cfg(target_os = "linux")]
+fn native_frame() -> bool {
+    !is_set("WAYLAND_DISPLAY") || uses_xwayland()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn native_frame() -> bool {
+    false
+}
+
 // Without an icon eframe shows the egui logo, on macOS even in place of the bundle icon.
 fn app_icon() -> egui::IconData {
     eframe::icon_data::from_png_bytes(include_bytes!("../../../packaging/icons/pgs2srt.png")).unwrap_or_default()
 }
 
 fn run(renderer: Renderer) -> eframe::Result<()> {
+    let native_frame = native_frame();
     let options = NativeOptions {
         renderer,
         event_loop_builder: event_loop_hook(),
@@ -58,7 +81,7 @@ fn run(renderer: Renderer) -> eframe::Result<()> {
             .with_min_inner_size(Vec2::new(920.0, 580.0))
             .with_title("pgs2srt — Blu-ray SUP to SRT Workbench")
             .with_icon(app_icon())
-            .with_decorations(false)
+            .with_decorations(native_frame)
             .with_drag_and_drop(true),
         ..Default::default()
     };
@@ -68,7 +91,7 @@ fn run(renderer: Renderer) -> eframe::Result<()> {
         options,
         Box::new(move |cc| {
             log::info!("Using the {renderer} renderer");
-            Ok(Box::new(PgsApp::new(cc, Box::new(DesktopPlatform::new()))))
+            Ok(Box::new(PgsApp::new(cc, Box::new(DesktopPlatform::new(!native_frame)))))
         }),
     )
 }

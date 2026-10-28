@@ -16,11 +16,13 @@ use ui_egui::{Capabilities, Input, Job, Mailbox, Platform, WorkerMessage};
 pub struct DesktopPlatform {
     backend: Arc<TesseractBackend>,
     workers: RefCell<Vec<JoinHandle<()>>>,
+    /// The app draws its own window buttons and resize edges (the window has no system frame).
+    window_controls: bool,
 }
 
 impl DesktopPlatform {
-    pub fn new() -> Self {
-        Self { backend: Arc::new(tesseract_backend()), workers: RefCell::default() }
+    pub fn new(window_controls: bool) -> Self {
+        Self { backend: Arc::new(tesseract_backend()), workers: RefCell::default(), window_controls }
     }
 
     fn start(&self, job: Job) -> io::Result<JoinHandle<()>> {
@@ -48,7 +50,7 @@ fn sup_inputs(path: &Path) -> Vec<Input> {
 
 impl Platform for DesktopPlatform {
     fn capabilities(&self) -> Capabilities {
-        Capabilities::ALL
+        Capabilities { window_controls: self.window_controls, ..Capabilities::ALL }
     }
 
     fn backend(&self) -> &dyn OcrBackend {
