@@ -228,9 +228,68 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  # The web version for any static web server. Same build as pages.yml, but with relative URLs so the folder
+  # works under any path.
+  web:
+    name: Web archive
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      TRUNK_VERSION: "0.21.14"
+      TRUNK_SHA256: f2b4680cd239693a646a2795e4633c625328d7b2a044fbe749fa3a2fe9e7036b
+      CARGO_ABOUT_VERSION: "0.9.2"
+      CARGO_ABOUT_SHA256: 9099a59e820c38a68b9d65f300662a567d56562f9a10f6aa4c7e86c17c2566af
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install tools
+        run: |
+          rustup target add wasm32-unknown-unknown
+          trunk="trunk-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$trunk" "https://github.com/trunk-rs/trunk/releases/download/v$TRUNK_VERSION/$trunk"
+          echo "$TRUNK_SHA256  $RUNNER_TEMP/$trunk" | sha256sum -c -
+          about="cargo-about-$CARGO_ABOUT_VERSION-x86_64-unknown-linux-musl.tar.gz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$about" "https://github.com/EmbarkStudios/cargo-about/releases/download/$CARGO_ABOUT_VERSION/$about"
+          echo "$CARGO_ABOUT_SHA256  $RUNNER_TEMP/$about" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/$trunk" -C "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/$about" -C "$RUNNER_TEMP/bin" --strip-components=1
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Fetch tesseract.js
+        run: packaging/web/fetch-tesseract-js.sh apps/pgs2srt-web/vendor
+
+      - name: Collect Rust crate licenses
+        run: |
+          cargo-about generate --locked -m apps/pgs2srt-web/Cargo.toml --target wasm32-unknown-unknown about.hbs \
+            -o apps/pgs2srt-web/vendor/licenses/THIRD-PARTY-LICENSES.html
+
+      - name: Build
+        working-directory: apps/pgs2srt-web
+        run: trunk build --release --locked --public-url ./
+
+      - name: Package
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          if grep -nE "[\"']/[^/>]" apps/pgs2srt-web/dist/index.html; then
+            echo "::error::index.html has root-relative URLs, so the app only works at the web server root"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/web" dist
+          cp -r apps/pgs2srt-web/dist "$RUNNER_TEMP/web/pgs2srt"
+          (cd "$RUNNER_TEMP/web" && zip -qr "$GITHUB_WORKSPACE/dist/pgs2srt-$VERSION-web.zip" pgs2srt)
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package-web
+          path: dist/*
+          if-no-files-found: error
+
   release:
     name: Draft release
-    needs: [prepare, linux, macos, windows]
+    needs: [prepare, linux, macos, windows, web]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     timeout-minutes: 10

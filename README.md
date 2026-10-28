@@ -25,6 +25,10 @@ the browser. Finished SRTs wait in the queue until you download them, one at a t
 `.zip` file. The first visit loads about 8 MB, and each OCR language about 4 MB more. The browser caches both. Conversion is slower
 than in the desktop app, and folders, output folders and overwrite options are not available.
 
+To host it yourself, unzip `pgs2srt-<version>-web.zip` from the [releases page](https://github.com/mbolaric/pgs2srt/releases)
+into a folder of any static web server and open it over HTTP(S) (not as a local file). It works under any path. OCR languages
+are still downloaded from GitHub on first use.
+
 ## Requirements (Ubuntu/Debian)
 
 ```bash
