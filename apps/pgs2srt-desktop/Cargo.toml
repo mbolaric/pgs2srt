@@ -12,8 +12,9 @@ pgs-ocr = { workspace = true }
 ui-egui = { workspace = true }
 rfd = { workspace = true }
 pollster = { workspace = true }
-# wgpu is the primary renderer, glow (OpenGL) is the runtime fallback.
-eframe = { workspace = true, features = ["default_fonts", "wgpu", "glow"] }
+# wgpu is the primary renderer, glow (OpenGL) is the runtime fallback. `system_fonts` draws scripts the
+# bundled UI font lacks (CJK, Arabic, … in file names and OCR text) with fonts installed on the system.
+eframe = { workspace = true, features = ["default_fonts", "system_fonts", "wgpu", "glow"] }
 egui = { workspace = true }
 log = { workspace = true }
 

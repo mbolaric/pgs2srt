@@ -1,4 +1,4 @@
-//! Design tokens, system typography, and egui visual styling modeled after PdfCraft:
+//! Design tokens, bundled typography, and egui visual styling modeled after PdfCraft:
 //! neutral chrome, crisp high-contrast panels, one blue accent, and consistent Light/Dark parity.
 
 mod apply;

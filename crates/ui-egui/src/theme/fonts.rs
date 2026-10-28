@@ -28,115 +28,26 @@ fn read_font_file(candidates: &[&str]) -> Option<FontData> {
     None
 }
 
-/// Builds font definitions with crisp Regular, Medium, SemiBold, and Monospace weights from
-/// installed system fonts (with graceful fallback to egui's built-in fonts).
+const UI_FONTS: [(&str, &str, &[u8]); 3] = [
+    ("regular", "Inter-Regular", include_bytes!("../../assets/fonts/Inter-Regular.ttf")),
+    ("medium", "Inter-Medium", include_bytes!("../../assets/fonts/Inter-Medium.ttf")),
+    ("semibold", "Inter-SemiBold", include_bytes!("../../assets/fonts/Inter-SemiBold.ttf")),
+];
+
+/// Builds font definitions with crisp Regular, Medium and SemiBold weights from the bundled Inter,
+/// and Monospace from an installed system font (egui's built-in fonts remain the fallback).
 pub fn font_definitions() -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
 
-    type FontFamilySet<'a> = (&'a str, &'a [&'a str], &'a [&'a str], &'a [&'a str]);
-    // Matched UI sans-serif families in priority order so Regular/Medium/SemiBold share metrics.
-    let matched_sets: &[FontFamilySet<'_>] = &[
-        (
-            "Inter",
-            &[
-                "/usr/share/fonts/inter/Inter-Regular.otf",
-                "/usr/share/fonts/truetype/inter/Inter-Regular.ttf",
-                "/usr/share/fonts/opentype/inter/Inter-Regular.otf",
-            ],
-            &[
-                "/usr/share/fonts/inter/Inter-Medium.otf",
-                "/usr/share/fonts/truetype/inter/Inter-Medium.ttf",
-                "/usr/share/fonts/opentype/inter/Inter-Medium.otf",
-            ],
-            &[
-                "/usr/share/fonts/inter/Inter-SemiBold.otf",
-                "/usr/share/fonts/truetype/inter/Inter-SemiBold.ttf",
-                "/usr/share/fonts/opentype/inter/Inter-SemiBold.otf",
-            ],
-        ),
-        (
-            "SegoeUI",
-            &["C:\\Windows\\Fonts\\segoeui.ttf"],
-            &["C:\\Windows\\Fonts\\seguisb.ttf", "C:\\Windows\\Fonts\\segoeui.ttf"],
-            &["C:\\Windows\\Fonts\\seguisb.ttf", "C:\\Windows\\Fonts\\segoeuib.ttf"],
-        ),
-        (
-            "Lato",
-            &["/usr/share/fonts/truetype/lato/Lato-Regular.ttf"],
-            &["/usr/share/fonts/truetype/lato/Lato-Medium.ttf"],
-            &["/usr/share/fonts/truetype/lato/Lato-Semibold.ttf", "/usr/share/fonts/truetype/lato/Lato-Bold.ttf"],
-        ),
-        (
-            "NotoSans",
-            &["/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", "/usr/share/fonts/noto/NotoSans-Regular.ttf"],
-            &[
-                "/usr/share/fonts/truetype/noto/NotoSans-Medium.ttf",
-                "/usr/share/fonts/noto/NotoSans-Medium.ttf",
-                "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
-                "/usr/share/fonts/noto/NotoSans-Regular.ttf",
-            ],
-            &[
-                "/usr/share/fonts/truetype/noto/NotoSans-SemiBold.ttf",
-                "/usr/share/fonts/noto/NotoSans-SemiBold.ttf",
-                "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
-                "/usr/share/fonts/noto/NotoSans-Bold.ttf",
-            ],
-        ),
-        (
-            "UbuntuSans",
-            &["/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf"],
-            &["/usr/share/fonts/truetype/ubuntu/Ubuntu-M.ttf"],
-            &["/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf"],
-        ),
-        (
-            "DejaVu",
-            &["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf"],
-            &["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf"],
-            &["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf"],
-        ),
-    ];
-
-    let mut loaded_primary = false;
-    for (name, reg_paths, med_paths, semi_paths) in matched_sets {
-        if let (Some(reg), Some(med), Some(semi)) =
-            (read_font_file(reg_paths), read_font_file(med_paths), read_font_file(semi_paths))
-        {
-            let reg_key = format!("{name}-Regular");
-            let med_key = format!("{name}-Medium");
-            let semi_key = format!("{name}-SemiBold");
-            fonts.font_data.insert(reg_key.clone(), Arc::new(reg));
-            fonts.font_data.insert(med_key.clone(), Arc::new(med));
-            fonts.font_data.insert(semi_key.clone(), Arc::new(semi));
-
-            fonts.families.entry(FontFamily::Proportional).or_default().insert(0, reg_key.clone());
-
-            let prop_fallback = fonts.families[&FontFamily::Proportional].clone();
-            let mut med_stack = vec![med_key];
-            med_stack.extend(prop_fallback.iter().cloned());
-            fonts.families.insert(FontFamily::Name("medium".into()), med_stack);
-
-            let mut semi_stack = vec![semi_key];
-            semi_stack.extend(prop_fallback);
-            fonts.families.insert(FontFamily::Name("semibold".into()), semi_stack);
-
-            loaded_primary = true;
-            break;
-        }
+    let fallback = fonts.families[&FontFamily::Proportional].clone();
+    for (weight, name, bytes) in UI_FONTS {
+        fonts.font_data.insert(name.to_owned(), Arc::new(FontData::from_static(bytes)));
+        let family = if weight == "regular" { FontFamily::Proportional } else { FontFamily::Name(weight.into()) };
+        let mut stack = vec![name.to_owned()];
+        stack.extend(fallback.iter().cloned());
+        fonts.families.insert(family, stack);
     }
 
-    // Broad Unicode glyph fallback (NotoSans) if primary wasn't already NotoSans.
-    if loaded_primary && !fonts.font_data.contains_key("NotoSans-Regular") {
-        if let Some(noto) =
-            read_font_file(&["/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", "/usr/share/fonts/noto/NotoSans-Regular.ttf"])
-        {
-            fonts.font_data.insert("NotoSans-Fallback".to_owned(), Arc::new(noto));
-            for family in [FontFamily::Proportional, FontFamily::Name("medium".into()), FontFamily::Name("semibold".into())] {
-                fonts.families.entry(family).or_default().insert(1, "NotoSans-Fallback".to_owned());
-            }
-        }
-    }
-
-    // Crisp monospace font for paths, language codes, and SRT timestamps.
     if let Some(mono_font) = read_font_file(&[
         "/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf",
         "/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMono-Regular.ttf",
@@ -149,11 +60,6 @@ pub fn font_definitions() -> FontDefinitions {
         fonts.font_data.insert("SystemMono".to_owned(), Arc::new(mono_font));
         fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "SystemMono".to_owned());
     }
-
-    // Ensure "medium" and "semibold" font families always exist even without system fonts.
-    let prop_stack = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
-    fonts.families.entry(FontFamily::Name("medium".into())).or_insert_with(|| prop_stack.clone());
-    fonts.families.entry(FontFamily::Name("semibold".into())).or_insert(prop_stack);
 
     fonts
 }
